@@ -16,18 +16,70 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
 #search { grid-column: 1 / -1; margin-top: 6px; padding: 6px 8px; background: #282828; border: 1px solid #444; color: #fff; border-radius: 4px; }
 
 .playlist { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px 12px; padding-top: 140px; }
-#song-list li { padding: 8px; border-bottom: 1px solid #282828; cursor: pointer; display: flex; gap: 10px; align-items: center; }
+
+/* NEW: Fixed playlist item layout */
+#song-list li {
+  padding: 8px 12px;
+  border-bottom: 1px solid #282828;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
 #song-list li.active { background: #1ed76022; border-left: 3px solid #1ed760; padding-left: 9px; }
-.song-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; }
-.song-title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.song-artist { font-size: 12px; color: #b3b3b3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.del-song { background: none; border: none; color: #b3b3b3; cursor: pointer; }
+.song-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+.song-meta { flex: 1; min-width: 0; }
+.song-title {
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.song-artist {
+  font-size: 12px;
+  color: #b3b3b3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.del-song {
+  background: none;
+  border: none;
+  color: #b3b3b3;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  opacity: 0.6;
+  font-size: 18px;
+}
+.del-song:hover { opacity: 1; color: #fff; }
 
 .bottom-fixed { position: fixed; bottom: env(safe-area-inset-bottom, 0); left: 0; right: 0; z-index: 100; background: #121212; padding: 8px 12px; }
 .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.controls button { background: none; border: none; color: #b3b3b3; font-size: 20px; cursor: pointer; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; }
+.controls button { background: none; border: none; color: #b3b3b3; font-size: 20px; cursor: pointer; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; position: relative; }
 #play { font-size: 24px; }
 #shuffle.active, #repeat.active { color: #1ed760; }
+
+/* NEW: Repeat one badge */
+#repeat.repeat-one::after {
+  content: '1';
+  position: absolute;
+  font-size: 10px;
+  font-weight: 700;
+  top: 2px;
+  right: 2px;
+  background: #1ed760;
+  color: #000;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .controls select { background: #282828; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 4px 8px; font-size: 12px; }
 
 .waveform-row { display: flex; align-items: center; gap: 12px; }
@@ -47,37 +99,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
 .eq-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
 .eq-header span { font-weight: 600; }
 
-/* Horizontal 10-band EQ - iOS safe */
-#eq{
-  display: flex;             /* put all bands in one row */
-  gap: 12px;
-  padding: 10px 15px 20px;
-  overflow-x: auto;          /* allow swipe left/right */
-  overflow-y: hidden;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
-#eq::-webkit-scrollbar{ display: none; }
-
-.eq-band{
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  min-width: 55px;           /* keep each band full size */
-  flex-shrink: 0;
-  text-align: center;
-}
-
-.eq-label{ font-size: 11px; color: var(--muted); }
-.eq-value{ font-size: 11px; color: var(--accent); min-height: 16px; }
-
-/* EQ Drawer Layout */
-.eq-drawer {
-  background: #181818;
-  border-top: 1px solid #282828;
-}
-
 .eq-bands {
   display: flex;
   justify-content: space-around;
@@ -93,9 +114,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
   align-items: center;
   gap: 8px;
   width: 32px;
+  position: relative;
 }
 
-/* The dB value above slider */
 .eq-value {
   font-size: 11px;
   font-weight: 700;
@@ -104,7 +125,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
   font-family: monospace;
 }
 
-/* The frequency label below */
 .eq-freq {
   font-size: 10px;
   color: #808080;
@@ -123,11 +143,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
   outline: none;
   cursor: pointer;
   padding: 0;
-  touch-action: none; /* add this line for mobile */
+  touch-action: none;
   margin: 0;
 }
 
-/* Chrome/Safari/Edge Fader Thumb */
 .eq-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -136,7 +155,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
   background: linear-gradient(to bottom, #e0e0e0, #b0b0b0);
   border: 1px solid #000;
   border-radius: 2px;
-  box-shadow: 
+  box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.4),
     0 2px 4px rgba(0,0,0,0.6);
   cursor: grab;
@@ -147,14 +166,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
   background: linear-gradient(to bottom, #1ed760, #1aa34a);
 }
 
-/* Firefox Fader Thumb */
 .eq-slider::-moz-range-thumb {
   width: 28px;
   height: 14px;
   background: linear-gradient(to bottom, #e0e0e0, #b0b0b0);
   border: 1px solid #000;
   border-radius: 2px;
-  box-shadow: 
+  box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.4),
     0 2px 4px rgba(0,0,0,0.6);
   cursor: grab;
@@ -166,7 +184,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
   background: #2a2a2a;
   border-radius: 4px;
 }
-/* Center line at 0dB */
+
 .eq-band::before {
   content: '';
   position: absolute;
@@ -179,9 +197,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
   pointer-events: none;
 }
 
-.eq-band {
-  position: relative;
-}
 .eq-controls { display: flex; justify-content: center; margin-top: 12px; }
 #eq-reset { background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 20px; padding: 6px 16px; font-size: 12px; cursor: pointer; }
 #eq-reset:active { background: #1ed760; color: #000; }

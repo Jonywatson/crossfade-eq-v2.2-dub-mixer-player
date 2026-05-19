@@ -1,7 +1,8 @@
-console.log('Crossfade Player v2.2 - 10 Band EQ Ready');
+console.log('Crossfade Player v2.2.1 - Playlist + Repeat/Shuffle Fix');
 
 let songs = [], currentIdx = -1, currentBlobUrl = null;
-let isShuffle = false, repeatMode = 0, shuffledIndices = [], shufflePosition = -1;
+let repeatMode = 0; // 0=off, 1=all, 2=one
+let isShuffling = false, shuffleOrder = [], shufflePosition = 0;
 let audioCtx = null, analyser = null, eqChain = [], activeGain, nextGain, isCrossfading = false;
 let crossfadeMs = 2000, lastVolume = 1, waveformData = [];
 
@@ -26,7 +27,6 @@ const fadeSlider = document.getElementById('fade-slider'), fadeTimeLabel = docum
 const DEFAULT_ART = './assets/default-art.svg';
 crossfadeMs = parseInt(fadeSlider.value);
 
-// 10-Band Presets: 32,64,125,250,500,1k,2k,4k,8k,16k
 const EQ_PRESETS = {
   flat: [0,0,0,0,0,0,0,0,0,0],
   bass: [8,6,4,2,0,0,-1,-2,-2,-3],
@@ -36,7 +36,7 @@ const EQ_PRESETS = {
   electronic: [4,5,3,1,0,-1,1,3,5,6]
 };
 
-// ===== Audio Engine - 10 Band + Dual Source Fix =====
+// ===== Audio Engine =====
 async function initAudio() {
   if (audioCtx) return;
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -48,10 +48,9 @@ async function initAudio() {
   activeGain.gain.value = parseFloat(volume.value) || 1;
 
   const preGain = audioCtx.createGain();
-  preGain.gain.value = 0.707; // -3dB headroom
+  preGain.gain.value = 0.707;
 
-  const eqFreqs = [32,64,125,250,500,1000,2000,4000,8000,16000];
-  eqChain = eqFreqs.map((f, i) => {
+  eqChain = EQ_BANDS.map((f, i) => {
     const filter = audioCtx.createBiquadFilter();
     filter.type = i === 0? 'lowshelf' : i === 9? 'highshelf' : 'peaking';
     filter.frequency.value = f;
@@ -60,7 +59,6 @@ async function initAudio() {
     return filter;
   });
 
-  // Both sources -> same EQ -> preGain -> gains -> dest
   const activeSource = audioCtx.createMediaElementSource(activeAudio);
   const nextSource = audioCtx.createMediaElementSource(nextAudio);
   activeSource.connect(eqChain[0]);
@@ -75,8 +73,8 @@ async function initAudio() {
   preGain.connect(analyser);
 
   activeAudio.addEventListener('timeupdate', onTimeUpdate);
-  activeAudio.addEventListener('ended', () => { if (!isCrossfading) nextBtn.click(); });
-  nextAudio.addEventListener('ended', () => { if (!isCrossfading) nextBtn.click(); });
+  activeAudio.addEventListener('ended', handleTrackEnd);
+  nextAudio.addEventListener('ended', handleTrackEnd);
 
   setupEQSliders();
   console.log('WebAudio 10-Band ready');
@@ -85,32 +83,19 @@ async function initAudio() {
 
 function setupEQSliders(){
   document.querySelectorAll('.eq-band').forEach((bandEl, i) => {
-    if(!bandEl.querySelector('.eq-value')){
-      const valSpan = document.createElement('span');
-      valSpan.className = 'eq-value';
-      valSpan.textContent = '0';
-      bandEl.appendChild(valSpan);
-    }
-    
     const slider = bandEl.querySelector('.eq-slider');
     const valSpan = bandEl.querySelector('.eq-value');
-
     slider.addEventListener('input', e => {
-  const band = parseInt(e.target.dataset.band);
-  const val = parseFloat(e.target.value);
-  
-  if(!eqChain || !eqChain) {
-    console.error('FILTER IS UNDEFINED. initAudio() did not run or eqChain was wiped.');
-    return;
-  }
-  
-  eqChain[band].gain.value = val;
-  valSpan.textContent = val > 0? `+${val}` : val;
-  if(eqPresetDrawer) eqPresetDrawer.value = 'flat';
-});
+      const band = parseInt(e.target.dataset.band);
+      const val = parseFloat(e.target.value);
+      if(!eqChain[band]) return;
+      eqChain[band].gain.value = val;
+      valSpan.textContent = val > 0? `+${val}` : val;
+      if(eqPresetDrawer) eqPresetDrawer.value = 'custom';
+    });
   });
 
-  document.getElementById('eq-reset')?.addEventListener('click', () => {
+  eqReset?.addEventListener('click', () => {
     eqChain.forEach(f => f.gain.value = 0);
     document.querySelectorAll('.eq-slider').forEach(s => s.value = 0);
     document.querySelectorAll('.eq-value').forEach(v => v.textContent = '0');
@@ -133,6 +118,7 @@ function applyPreset(name) {
       eqChain[i].gain.cancelScheduledValues(audioCtx.currentTime);
       eqChain[i].gain.linearRampToValueAtTime(gains[i], audioCtx.currentTime + 0.15);
     }
+    slider.parentElement.querySelector('.eq-value').textContent = gains[i] > 0? `+${gains[i]}` : gains[i];
   });
   eqPreset.value = name;
   eqPresetDrawer.value = name;
@@ -141,21 +127,18 @@ function applyPreset(name) {
 eqPreset.addEventListener('change', e => applyPreset(e.target.value));
 eqPresetDrawer.addEventListener('change', e => applyPreset(e.target.value));
 
-// ===== Crossfade =====
+// ===== Crossfade + Repeat Logic =====
 function checkCrossfade() {
   if (crossfadeMs === 0 || isCrossfading ||!activeAudio.duration || songs.length < 2) return;
-  if (repeatMode === 2) return;
+  if (repeatMode === 2) return; // Don't crossfade on repeat-one
   const timeLeft = activeAudio.duration - activeAudio.currentTime;
   const fadeSec = crossfadeMs / 1000;
   if (timeLeft <= fadeSec && timeLeft > 0.5) startCrossfade();
 }
 
 function startCrossfade() {
-  let next = currentIdx + 1;
-  if (next >= songs.length) {
-    if (repeatMode === 1) next = 0;
-    else { isCrossfading = false; return; }
-  }
+  let next = getNextIndex();
+  if (next === -1) { isCrossfading = false; return; }
 
   isCrossfading = true;
   activeAudio.removeEventListener('timeupdate', onTimeUpdate);
@@ -186,7 +169,52 @@ function startCrossfade() {
   }, crossfadeMs);
 }
 
-// ===== Core Player Logic =====
+// ===== Playback Logic =====
+function getNextIndex() {
+  if (repeatMode === 2) return currentIdx; // repeat one
+
+  if (isShuffling) {
+    shufflePosition++;
+    if (shufflePosition >= shuffleOrder.length) {
+      if (repeatMode === 1) {
+        generateShuffleOrder();
+        shufflePosition = 0;
+      } else {
+        return -1;
+      }
+    }
+    return shuffleOrder[shufflePosition];
+  } else {
+    let next = currentIdx + 1;
+    if (next >= songs.length) {
+      if (repeatMode === 1) return 0;
+      return -1;
+    }
+    return next;
+  }
+}
+
+function getPrevIndex() {
+  if (isShuffling) {
+    shufflePosition--;
+    if (shufflePosition < 0) shufflePosition = shuffleOrder.length - 1;
+    return shuffleOrder[shufflePosition];
+  } else {
+    return (currentIdx - 1 + songs.length) % songs.length;
+  }
+}
+
+function handleTrackEnd() {
+  if (isCrossfading) return;
+  if (repeatMode === 2) {
+    activeAudio.currentTime = 0;
+    activeAudio.play();
+    return;
+  }
+  const next = getNextIndex();
+  if (next!== -1) loadSong(next, true);
+}
+
 async function loadSong(idx, shouldPlay = true) {
   const song = songs[idx]; if (!song) return;
   await initAudio(); if (audioCtx.state === 'suspended') await audioCtx.resume();
@@ -194,6 +222,7 @@ async function loadSong(idx, shouldPlay = true) {
   if (activeGain) { activeGain.gain.cancelScheduledValues(audioCtx.currentTime); activeGain.gain.setValueAtTime(parseFloat(volume.value) || 1, audioCtx.currentTime); }
   if (nextGain) { nextGain.gain.cancelScheduledValues(audioCtx.currentTime); nextGain.gain.setValueAtTime(0, audioCtx.currentTime); }
   currentIdx = idx;
+  if (isShuffling) shufflePosition = shuffleOrder.indexOf(idx);
   if (activeAudio.src) URL.revokeObjectURL(activeAudio.src);
   activeAudio.src = URL.createObjectURL(song.blob);
   activeAudio.load();
@@ -207,8 +236,8 @@ async function loadSong(idx, shouldPlay = true) {
 
 function preloadNextSong() {
   if (crossfadeMs === 0 || songs.length < 2) return;
-  let nextIdx = currentIdx + 1;
-  if (nextIdx >= songs.length) { if (repeatMode === 1) nextIdx = 0; else return; }
+  let nextIdx = getNextIndex();
+  if (nextIdx === -1 || nextIdx === currentIdx) return;
   const nextSong = songs[nextIdx];
   if (!nextSong || nextAudio.dataset.songIdx == nextIdx) return;
   if (nextAudio.src) URL.revokeObjectURL(nextAudio.src);
@@ -217,6 +246,7 @@ function preloadNextSong() {
   nextAudio.load();
 }
 
+// ===== Controls =====
 playBtn.addEventListener('click', async () => {
   await initAudio();
   if (songs.length === 0) return;
@@ -225,23 +255,48 @@ playBtn.addEventListener('click', async () => {
   else { activeAudio.pause(); playBtn.textContent = '▶️'; }
 });
 
-nextBtn.onclick = () => { if (songs.length) loadSong((currentIdx + 1) % songs.length, true); };
-prevBtn.onclick = () => { if (songs.length) loadSong((currentIdx - 1 + songs.length) % songs.length, true); };
+nextBtn.onclick = () => {
+  const next = getNextIndex();
+  if (next!== -1) loadSong(next, true);
+};
+
+prevBtn.onclick = () => {
+  const prev = getPrevIndex();
+  loadSong(prev, true);
+};
 
 repeatBtn.onclick = () => {
   repeatMode = (repeatMode + 1) % 3;
-  repeatBtn.textContent = repeatMode === 2? '🔂' : '🔁';
-  repeatBtn.classList.toggle('active', repeatMode > 0);
+  repeatBtn.classList.remove('active', 'repeat-one');
+  if (repeatMode === 1) {
+    repeatBtn.classList.add('active');
+    repeatBtn.title = 'Repeat All';
+  } else if (repeatMode === 2) {
+    repeatBtn.classList.add('active', 'repeat-one');
+    repeatBtn.title = 'Repeat One';
+  } else {
+    repeatBtn.title = 'Repeat Off';
+  }
 };
 
 shuffleBtn.onclick = () => {
-  isShuffle =!isShuffle;
-  shuffleBtn.classList.toggle('active', isShuffle);
-  if (isShuffle) {
-    shuffledIndices = [...Array(songs.length).keys()].sort(() => Math.random() - 0.5);
-    shufflePosition = shuffledIndices.indexOf(currentIdx);
-  }
+  isShuffling =!isShuffling;
+  shuffleBtn.classList.toggle('active', isShuffling);
+  if (isShuffling) generateShuffleOrder();
 };
+
+function generateShuffleOrder() {
+  shuffleOrder = [...Array(songs.length).keys()];
+  for (let i = shuffleOrder.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffleOrder[i], shuffleOrder[j]] = [shuffleOrder[j], shuffleOrder[i]];
+  }
+  const currentPos = shuffleOrder.indexOf(currentIdx);
+  if (currentPos!== -1 && currentPos!== 0) {
+    [shuffleOrder[0], shuffleOrder[currentPos]] = [shuffleOrder[currentPos], shuffleOrder[0]];
+  }
+  shufflePosition = 0;
+}
 
 fadeSlider.addEventListener('input', () => {
   crossfadeMs = parseInt(fadeSlider.value);
@@ -285,6 +340,7 @@ function setAlbumArt(file) {
   });
 }
 
+// FIXED: Playlist render with proper structure
 function renderPlaylist() {
   const list = searchInput && searchInput.value? songs.filter(s => s.title.toLowerCase().includes(searchInput.value.toLowerCase())) : songs;
   songList.innerHTML = list.map((s) => {
@@ -295,13 +351,23 @@ function renderPlaylist() {
         <div class="song-title">${s.title}</div>
         <div class="song-artist">${s.artist}</div>
       </div>
-      <button class="del-song" data-idx="${realIdx}">✕</button>
+      <button class="del-song" data-idx="${realIdx}">×</button>
     </li>`;
   }).join('');
 }
+
 songList.onclick = e => {
   if (e.target.classList.contains('del-song')) {
-    songs.splice(e.target.dataset.idx, 1);
+    e.stopPropagation();
+    const idx = parseInt(e.target.dataset.idx);
+    songs.splice(idx, 1);
+    if (currentIdx === idx) {
+      activeAudio.pause();
+      currentIdx = -1;
+    } else if (currentIdx > idx) {
+      currentIdx--;
+    }
+    if (isShuffling) generateShuffleOrder();
     renderPlaylist();
     return;
   }
@@ -315,6 +381,7 @@ async function handleFiles(fileList) {
     const meta = await readTagsAndArt(file);
     songs.push({ id: crypto.randomUUID(), title: meta.title, artist: meta.artist, blob: file, artUrl: meta.artUrl || DEFAULT_ART});
   }
+  if (isShuffling) generateShuffleOrder();
   renderPlaylist();
   if (currentIdx === -1 && songs.length) loadSong(0, false);
 }
@@ -333,16 +400,16 @@ async function readTagsAndArt(file) {
           const blob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
           artUrl = URL.createObjectURL(blob);
         }
-        resolve({ 
-          title: tag.tags.title || file.name.replace(/\.[^/.]+$/, ""), 
+        resolve({
+          title: tag.tags.title || file.name.replace(/\.[^/.]+$/, ""),
           artist: tag.tags.artist || 'Unknown',
           artUrl: artUrl
         });
       },
-      onError: () => resolve({ 
-        title: file.name.replace(/\.[^/.]+$/, ""), 
+      onError: () => resolve({
+        title: file.name.replace(/\.[^/.]+$/, ""),
         artist: 'Unknown',
-        artUrl: DEFAULT_ART 
+        artUrl: DEFAULT_ART
       })
     });
   });
@@ -441,12 +508,10 @@ deleteStuckBtn.onclick = () => {
 
 searchInput.addEventListener('input', renderPlaylist);
 
-
-
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js')
-     .then(reg => console.log('SW registered'))
-     .catch(err => console.log('SW failed: ', err));
+    .then(reg => console.log('SW registered'))
+    .catch(err => console.log('SW failed: ', err));
   });
 }
