@@ -1,10 +1,11 @@
-console.log('Crossfade Player v2.2.1 - Playlist + Repeat/Shuffle Fix');
+console.log('Crossfade Player v2.2.3 - Track Sync + Media Session Fix');
 
 let songs = [], currentIdx = -1, currentBlobUrl = null;
 let repeatMode = 0; // 0=off, 1=all, 2=one
 let isShuffling = false, shuffleOrder = [], shufflePosition = 0;
 let audioCtx = null, analyser = null, eqChain = [], activeGain, nextGain, isCrossfading = false;
 let crossfadeMs = 2000, lastVolume = 1, waveformData = [];
+let isHandlingEnded = false; // Guard for ended events
 
 const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const audio = document.getElementById('audio');
@@ -28,7 +29,7 @@ const DEFAULT_ART = './assets/default-art.svg';
 crossfadeMs = parseInt(fadeSlider.value);
 
 const EQ_PRESETS = {
-  flat: [0,0,0,0,0,0,0,0,0,0],
+  flat: [0,0,0,0],
   bass: [8,6,4,2,0,0,-1,-2,-2,-3],
   rock: [5,4,2,-1,-2,-1,1,3,4,5],
   pop: [-2,0,2,3,2,1,1,2,0,-1],
@@ -163,6 +164,7 @@ function startCrossfade() {
     activeAudio.addEventListener('timeupdate', onTimeUpdate);
     currentIdx = next;
     updateUI(songs[currentIdx]);
+    updateMediaSession(songs[currentIdx]);
     renderPlaylist();
     preloadNextSong();
     isCrossfading = false;
@@ -204,34 +206,67 @@ function getPrevIndex() {
   }
 }
 
-function handleTrackEnd() {
-  if (isCrossfading) return;
+// FIXED: Guarded handleTrackEnd for glitch #1
+async function handleTrackEnd() {
+  if (isHandlingEnded || isCrossfading) return;
+  isHandlingEnded = true;
+
   if (repeatMode === 2) {
     activeAudio.currentTime = 0;
     activeAudio.play();
+    isHandlingEnded = false;
     return;
   }
+
   const next = getNextIndex();
-  if (next!== -1) loadSong(next, true);
+  if (next!== -1) {
+    await loadSong(next, true);
+  } else {
+    isPlaying = false;
+    playBtn.textContent = '▶️';
+    updateMediaSessionState();
+  }
+
+  setTimeout(() => isHandlingEnded = false, 150);
 }
 
 async function loadSong(idx, shouldPlay = true) {
-  const song = songs[idx]; if (!song) return;
-  await initAudio(); if (audioCtx.state === 'suspended') await audioCtx.resume();
+  currentIdx = idx; // Force sync immediately - FIX for glitch #1
+  const song = songs[idx];
+  if (!song) return;
+
+  await initAudio();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
   activeAudio.pause();
-  if (activeGain) { activeGain.gain.cancelScheduledValues(audioCtx.currentTime); activeGain.gain.setValueAtTime(parseFloat(volume.value) || 1, audioCtx.currentTime); }
-  if (nextGain) { nextGain.gain.cancelScheduledValues(audioCtx.currentTime); nextGain.gain.setValueAtTime(0, audioCtx.currentTime); }
-  currentIdx = idx;
+  if (activeGain) {
+    activeGain.gain.cancelScheduledValues(audioCtx.currentTime);
+    activeGain.gain.setValueAtTime(parseFloat(volume.value) || 1, audioCtx.currentTime);
+  }
+  if (nextGain) {
+    nextGain.gain.cancelScheduledValues(audioCtx.currentTime);
+    nextGain.gain.setValueAtTime(0, audioCtx.currentTime);
+  }
+
   if (isShuffling) shufflePosition = shuffleOrder.indexOf(idx);
   if (activeAudio.src) URL.revokeObjectURL(activeAudio.src);
   activeAudio.src = URL.createObjectURL(song.blob);
   activeAudio.load();
   setAlbumArt(song.blob);
   updateUI(song);
+  updateMediaSession(song); // FIX for glitch #2
   renderPlaylist();
   drawWaveform(song.blob).catch(() => {});
   preloadNextSong();
-  if (shouldPlay) { try { await activeAudio.play(); playBtn.textContent = '⏸️'; } catch {} }
+
+  if (shouldPlay) {
+    try {
+      await activeAudio.play();
+      isPlaying = true;
+      playBtn.textContent = '⏸️';
+      updateMediaSessionState();
+    } catch {}
+  }
 }
 
 function preloadNextSong() {
@@ -246,24 +281,97 @@ function preloadNextSong() {
   nextAudio.load();
 }
 
+// ===== Media Session API - FIX for glitch #2 =====
+function updateMediaSession(song) {
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: song.title || 'Unknown',
+      artist: song.artist || 'Unknown',
+      album: 'PWA Music Player',
+      artwork: [
+        { src: song.artUrl || DEFAULT_ART, sizes: '512x512', type: 'image/png' }
+      ]
+    });
+    navigator.mediaSession.playbackState = activeAudio.paused? 'paused' : 'playing';
+  }
+}
+
+function updateMediaSessionState() {
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.playbackState = activeAudio.paused? 'paused' : 'playing';
+  }
+}
+
+function setupMediaSessionHandlers() {
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.setActionHandler('play', async () => {
+      await initAudio();
+      if (currentIdx === -1 && songs.length > 0) {
+        await loadSong(0, true);
+      } else {
+        await activeAudio.play();
+        isPlaying = true;
+        playBtn.textContent = '⏸️';
+        updateMediaSessionState();
+      }
+    });
+
+    navigator.mediaSession.setActionHandler('pause', () => {
+      activeAudio.pause();
+      isPlaying = false;
+      playBtn.textContent = '▶️';
+      updateMediaSessionState();
+    });
+
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      prevSong();
+    });
+
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      nextSong();
+    });
+
+    navigator.mediaSession.setActionHandler('seekto', (details) => {
+      if (details.seekTime) activeAudio.currentTime = details.seekTime;
+    });
+  }
+}
+
 // ===== Controls =====
+let isPlaying = false;
+
 playBtn.addEventListener('click', async () => {
   await initAudio();
   if (songs.length === 0) return;
-  if (currentIdx === -1) { await loadSong(0, true); return; }
-  if (activeAudio.paused) { await activeAudio.play(); playBtn.textContent = '⏸️'; }
-  else { activeAudio.pause(); playBtn.textContent = '▶️'; }
+  if (currentIdx === -1) {
+    await loadSong(0, true);
+    return;
+  }
+  if (activeAudio.paused) {
+    await activeAudio.play();
+    isPlaying = true;
+    playBtn.textContent = '⏸️';
+    updateMediaSessionState();
+  } else {
+    activeAudio.pause();
+    isPlaying = false;
+    playBtn.textContent = '▶️';
+    updateMediaSessionState();
+  }
 });
 
-nextBtn.onclick = () => {
+function nextSong() {
   const next = getNextIndex();
   if (next!== -1) loadSong(next, true);
-};
+}
 
-prevBtn.onclick = () => {
+function prevSong() {
   const prev = getPrevIndex();
   loadSong(prev, true);
-};
+}
+
+nextBtn.onclick = nextSong;
+prevBtn.onclick = prevSong;
 
 repeatBtn.onclick = () => {
   repeatMode = (repeatMode + 1) % 3;
@@ -340,7 +448,6 @@ function setAlbumArt(file) {
   });
 }
 
-// FIXED: Playlist render with proper structure
 function renderPlaylist() {
   const list = searchInput && searchInput.value? songs.filter(s => s.title.toLowerCase().includes(searchInput.value.toLowerCase())) : songs;
   songList.innerHTML = list.map((s) => {
@@ -548,7 +655,10 @@ searchInput.addEventListener('input', renderPlaylist);
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js')
-    .then(reg => console.log('SW registered'))
-    .catch(err => console.log('SW failed: ', err));
+   .then(reg => console.log('SW registered'))
+   .catch(err => console.log('SW failed: ', err));
   });
 }
+
+// Initialize Media Session handlers
+setupMediaSessionHandlers();
