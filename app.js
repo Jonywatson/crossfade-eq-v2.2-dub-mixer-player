@@ -376,14 +376,47 @@ songList.onclick = e => {
 };
 
 async function handleFiles(fileList) {
-  for (const file of fileList) {
-    if (!file.type.startsWith('audio/')) continue;
-    const meta = await readTagsAndArt(file);
-    songs.push({ id: crypto.randomUUID(), title: meta.title, artist: meta.artist, blob: file, artUrl: meta.artUrl || DEFAULT_ART});
+  const files = Array.from(fileList).filter(f => f.type.startsWith('audio/'));
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const id = crypto.randomUUID();
+
+    const song = {
+      id,
+      title: file.name.replace(/\.[^/.]+$/, ""),
+      artist: 'Loading...',
+      blob: file,
+      artUrl: DEFAULT_ART
+    };
+    songs.push(song);
+
+    renderPlaylist();
+    if (currentIdx === -1 && songs.length === 1) loadSong(0, false);
+
+    try {
+      const meta = await readTagsAndArt(file);
+      song.title = meta.title;
+      song.artist = meta.artist;
+      song.artUrl = meta.artUrl;
+
+      const idx = songs.length - 1;
+      const row = songList.querySelector(`li[data-idx="${idx}"]`);
+      if (row) {
+        row.querySelector('.song-title').textContent = song.title;
+        row.querySelector('.song-artist').textContent = song.artist;
+        row.querySelector('.song-thumb').src = song.artUrl;
+      }
+      if (currentIdx === idx) updateUI(song);
+
+    } catch (err) {
+      console.warn('Tag read failed for', file.name, err);
+    }
+
+    await new Promise(r => setTimeout(r, 0));
   }
+
   if (isShuffling) generateShuffleOrder();
-  renderPlaylist();
-  if (currentIdx === -1 && songs.length) loadSong(0, false);
 }
 
 addSongsBtn.onclick = () => fileInput.click();
@@ -396,9 +429,13 @@ async function readTagsAndArt(file) {
     jsmediatags.read(file, {
       onSuccess: tag => {
         let artUrl = DEFAULT_ART;
-        if (tag.tags.picture) {
-          const blob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
-          artUrl = URL.createObjectURL(blob);
+        try {
+          if (tag.tags.picture) {
+            const blob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
+            artUrl = URL.createObjectURL(blob);
+          }
+        } catch (e) {
+          console.warn('Art extraction failed:', e);
         }
         resolve({
           title: tag.tags.title || file.name.replace(/\.[^/.]+$/, ""),
