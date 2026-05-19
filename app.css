@@ -1,0 +1,187 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100dvh; overflow: hidden; margin: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #121212; color: #fff; display: flex; flex-direction: column; }
+.app { display: flex; flex-direction: column; height: 100vh; }
+
+.top-fixed { position: fixed; top: env(safe-area-inset-top, 0); left: 0; right: 0; z-index: 100; background: #121212; padding: 8px 12px; }
+.top-row { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+#spectrum { width: 68px; height: 80px; background: rgba(0,0,0,0.6); border-radius: 4px; }
+.album-art-container { width: 70px; height: 70px; flex-shrink: 0; }
+#album-art { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
+#now-title { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+#now-artist { font-size: 11px; color: #b3b3b3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+
+.folder-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(85px, 1fr)); gap: 4px; }
+.folder-actions button { background: #1DB954; border: none; padding: 5px 8px; border-radius: 20px; color: #000; font-weight: 600; cursor: pointer; font-size: 11px; }
+#search { grid-column: 1 / -1; margin-top: 6px; padding: 6px 8px; background: #282828; border: 1px solid #444; color: #fff; border-radius: 4px; }
+
+.playlist { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px 12px; padding-top: 140px; }
+#song-list li { padding: 8px; border-bottom: 1px solid #282828; cursor: pointer; display: flex; gap: 10px; align-items: center; }
+#song-list li.active { background: #1ed76022; border-left: 3px solid #1ed760; padding-left: 9px; }
+.song-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; }
+.song-title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.song-artist { font-size: 12px; color: #b3b3b3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.del-song { background: none; border: none; color: #b3b3b3; cursor: pointer; }
+
+.bottom-fixed { position: fixed; bottom: env(safe-area-inset-bottom, 0); left: 0; right: 0; z-index: 100; background: #121212; padding: 8px 12px; }
+.controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.controls button { background: none; border: none; color: #b3b3b3; font-size: 20px; cursor: pointer; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; }
+#play { font-size: 24px; }
+#shuffle.active, #repeat.active { color: #1ed760; }
+.controls select { background: #282828; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+
+.waveform-row { display: flex; align-items: center; gap: 12px; }
+#waveform { flex: 1; height: 20px; background: #2a2a2a; border-radius: 6px; cursor: pointer; }
+#timer { font-size: 12px; color: #b3b3b3; white-space: nowrap; }
+
+.vu-wrapper { position: relative; height: 20px; margin: 8px 0; }
+#vu-meter { width: 100%; height: 20px; }
+#volume { position: absolute; top: 0; left: 0; width: 100%; height: 20px; opacity: 0.8; }
+
+.fade-label { font-size: 12px; color: #b3b3b3; white-space: nowrap; margin-left: 12px; }
+#fade-slider { width: 100px; accent-color: #1ed760; }
+
+/* EQ DRAWER */
+#eq-drawer { display: none; padding: 12px; background: #181818; border-radius: 12px; margin-top: 8px; }
+#eq-drawer.open { display: block; }
+.eq-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.eq-header span { font-weight: 600; }
+
+/* Horizontal 10-band EQ - iOS safe */
+#eq{
+  display: flex;             /* put all bands in one row */
+  gap: 12px;
+  padding: 10px 15px 20px;
+  overflow-x: auto;          /* allow swipe left/right */
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+#eq::-webkit-scrollbar{ display: none; }
+
+.eq-band{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 55px;           /* keep each band full size */
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.eq-label{ font-size: 11px; color: var(--muted); }
+.eq-value{ font-size: 11px; color: var(--accent); min-height: 16px; }
+
+/* EQ Drawer Layout */
+.eq-drawer {
+  background: #181818;
+  border-top: 1px solid #282828;
+}
+
+.eq-bands {
+  display: flex;
+  justify-content: space-around;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 20px 16px;
+  height: 220px;
+}
+
+.eq-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 32px;
+}
+
+/* The dB value above slider */
+.eq-value {
+  font-size: 11px;
+  font-weight: 700;
+  color: #1ed760;
+  min-height: 14px;
+  font-family: monospace;
+}
+
+/* The frequency label below */
+.eq-freq {
+  font-size: 10px;
+  color: #808080;
+  font-weight: 600;
+}
+
+.eq-slider {
+  appearance: none;
+  -webkit-appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 8px;
+  height: 140px;
+  background: #2a2a2a;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+  padding: 0;
+  touch-action: none; /* add this line for mobile */
+  margin: 0;
+}
+
+/* Chrome/Safari/Edge Fader Thumb */
+.eq-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 28px;
+  height: 14px;
+  background: linear-gradient(to bottom, #e0e0e0, #b0b0b0);
+  border: 1px solid #000;
+  border-radius: 2px;
+  box-shadow: 
+    inset 0 1px 0 rgba(255,255,255,0.4),
+    0 2px 4px rgba(0,0,0,0.6);
+  cursor: grab;
+}
+
+.eq-slider::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  background: linear-gradient(to bottom, #1ed760, #1aa34a);
+}
+
+/* Firefox Fader Thumb */
+.eq-slider::-moz-range-thumb {
+  width: 28px;
+  height: 14px;
+  background: linear-gradient(to bottom, #e0e0e0, #b0b0b0);
+  border: 1px solid #000;
+  border-radius: 2px;
+  box-shadow: 
+    inset 0 1px 0 rgba(255,255,255,0.4),
+    0 2px 4px rgba(0,0,0,0.6);
+  cursor: grab;
+  border: none;
+}
+
+.eq-slider::-moz-range-track {
+  width: 8px;
+  background: #2a2a2a;
+  border-radius: 4px;
+}
+/* Center line at 0dB */
+.eq-band::before {
+  content: '';
+  position: absolute;
+  width: 32px;
+  height: 1px;
+  background: #404040;
+  top: 50%;
+  transform: translateY(55px);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.eq-band {
+  position: relative;
+}
+.eq-controls { display: flex; justify-content: center; margin-top: 12px; }
+#eq-reset { background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 20px; padding: 6px 16px; font-size: 12px; cursor: pointer; }
+#eq-reset:active { background: #1ed760; color: #000; }
