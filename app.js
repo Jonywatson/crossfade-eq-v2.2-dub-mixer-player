@@ -733,7 +733,7 @@ function drawSpectrum() {
     requestAnimationFrame(loop);
     analyser.getByteFrequencyData(data);
 
-    const w = 90;
+    const w = 68;
     const h = 80;
     canvas.width = w;
     canvas.height = h;
@@ -741,12 +741,12 @@ function drawSpectrum() {
 
     // Gradient - halfway between bright and dimmed
 const grad = ctx.createLinearGradient(0, 0, w, 0);
-grad.addColorStop(0, '#d90000'); // Brighter than #b30000, darker than #ff0000
+grad.addColorStop(0, '#ff0000'); // Brighter than #b30000, darker than #ff0000
 grad.addColorStop(0.25, '#d94d00');
 grad.addColorStop(0.45, '#d9d900');
 grad.addColorStop(0.6, '#77d900');
-grad.addColorStop(0.75, '#00d900');
-grad.addColorStop(1, '#00d977');
+grad.addColorStop(0.75, '#00ff00');
+grad.addColorStop(1, '#00ff00');
 
     for (let i = 0; i < barCount; i++) {
       const bin = Math.floor((i / barCount) * data.length);
