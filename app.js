@@ -1,11 +1,11 @@
-console.log('Crossfade Player v2.2.3 - Track Sync + Media Session Fix');
+console.log('Crossfade Player v2.2.8 - EQ Fix + AbortError + Crossfade Art');
 
-let songs = [], currentIdx = -1, currentBlobUrl = null;
+let songs = [], currentIdx = -1;
 let repeatMode = 0; // 0=off, 1=all, 2=one
 let isShuffling = false, shuffleOrder = [], shufflePosition = 0;
 let audioCtx = null, analyser = null, eqChain = [], activeGain, nextGain, isCrossfading = false;
 let crossfadeMs = 2000, lastVolume = 1, waveformData = [];
-let isHandlingEnded = false; // Guard for ended events
+let isHandlingEnded = false;
 
 const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const audio = document.getElementById('audio');
@@ -28,8 +28,9 @@ const fadeSlider = document.getElementById('fade-slider'), fadeTimeLabel = docum
 const DEFAULT_ART = './assets/default-art.svg';
 crossfadeMs = parseInt(fadeSlider.value);
 
+// FIX 1: Correct EQ preset length
 const EQ_PRESETS = {
-  flat: [0,0,0,0],
+  flat: [0,0,0,0,0,0,0,0,0,0],
   bass: [8,6,4,2,0,0,-1,-2,-2,-3],
   rock: [5,4,2,-1,-2,-1,1,3,4,5],
   pop: [-2,0,2,3,2,1,1,2,0,-1],
@@ -131,22 +132,50 @@ eqPresetDrawer.addEventListener('change', e => applyPreset(e.target.value));
 // ===== Crossfade + Repeat Logic =====
 function checkCrossfade() {
   if (crossfadeMs === 0 || isCrossfading ||!activeAudio.duration || songs.length < 2) return;
-  if (repeatMode === 2) return; // Don't crossfade on repeat-one
+  if (repeatMode === 2) return;
   const timeLeft = activeAudio.duration - activeAudio.currentTime;
   const fadeSec = crossfadeMs / 1000;
-  if (timeLeft <= fadeSec && timeLeft > 0.5) startCrossfade();
+  // FIX: Add 0.2s buffer so we don't crossfade too late
+  if (timeLeft <= fadeSec && timeLeft > fadeSec - 0.2) startCrossfade();
 }
 
-function startCrossfade() {
+// FIX 2: Ensure art loads during crossfade
+async function startCrossfade() {
   let next = getNextIndex();
-  if (next === -1) { isCrossfading = false; return; }
+  if (next === -1) {
+    isCrossfading = false;
+    return;
+  }
 
   isCrossfading = true;
   activeAudio.removeEventListener('timeupdate', onTimeUpdate);
 
+  if (!nextAudio.src || nextAudio.dataset.songIdx!= next) {
+    const nextSong = songs[next];
+    if (!nextSong) { isCrossfading = false; return; }
+    nextAudio.src = URL.createObjectURL(nextSong.blob);
+    nextAudio.dataset.songIdx = next;
+    nextAudio.load();
+  }
+
   nextAudio.currentTime = 0;
   nextGain.gain.value = 0;
-  nextAudio.play().catch(() => {});
+
+  try {
+    if (nextAudio.readyState < 2) {
+      await new Promise((resolve, reject) => {
+        nextAudio.addEventListener('canplay', resolve, { once: true });
+        nextAudio.addEventListener('error', reject, { once: true });
+        setTimeout(reject, 1000);
+      });
+    }
+    await nextAudio.play();
+  } catch (e) {
+    console.log('Crossfade aborted - next track play failed:', e);
+    isCrossfading = false;
+    activeAudio.addEventListener('timeupdate', onTimeUpdate);
+    return;
+  }
 
   const now = audioCtx.currentTime, fadeTime = crossfadeMs / 1000;
   activeGain.gain.cancelScheduledValues(now);
@@ -156,26 +185,48 @@ function startCrossfade() {
   nextGain.gain.setValueAtTime(0, now);
   nextGain.gain.linearRampToValueAtTime(1, now + fadeTime);
 
-  setTimeout(() => {
-    activeAudio.pause();
-    activeGain.gain.value = parseFloat(volume.value) || 1;
-    [activeAudio, nextAudio] = [nextAudio, activeAudio];
-    [activeGain, nextGain] = [nextGain, activeGain];
-    activeAudio.addEventListener('timeupdate', onTimeUpdate);
-    currentIdx = next;
-    updateUI(songs[currentIdx]);
-    updateMediaSession(songs[currentIdx]);
-    renderPlaylist();
-    preloadNextSong();
-    isCrossfading = false;
-  }, crossfadeMs);
+  // Extract swap logic so we can call it manually
+  const doSwap = async () => {
+    try {
+      activeAudio.pause();
+      activeGain.gain.value = parseFloat(volume.value) || 1;
+      [activeAudio, nextAudio] = [nextAudio, activeAudio];
+      [activeGain, nextGain] = [nextGain, activeGain];
+      activeAudio.addEventListener('timeupdate', onTimeUpdate);
+      currentIdx = next;
+      await setAlbumArt(songs[currentIdx].blob);
+      updateUI(songs[currentIdx]);
+      updateMediaSession(songs[currentIdx]);
+      renderPlaylist();
+      preloadNextSong();
+    } catch (e) {
+      console.log('Crossfade swap failed:', e);
+    } finally {
+      isCrossfading = false;
+    }
+  };
+
+  const crossfadeTimeout = setTimeout(doSwap, crossfadeMs);
+
+  // If activeAudio ends during crossfade, force swap early
+  const forceSwap = () => {
+    clearTimeout(crossfadeTimeout);
+    doSwap(); // Call directly, no._onTimeout()
+  };
+  activeAudio.addEventListener('ended', forceSwap, { once: true });
 }
 
 // ===== Playback Logic =====
 function getNextIndex() {
-  if (repeatMode === 2) return currentIdx; // repeat one
+  if (repeatMode === 2) return currentIdx;
 
   if (isShuffling) {
+    // Ensure shuffleOrder is valid
+    if (!shuffleOrder.length || shuffleOrder.length!== songs.length) {
+      generateShuffleOrder();
+      shufflePosition = shuffleOrder.indexOf(currentIdx);
+    }
+
     shufflePosition++;
     if (shufflePosition >= shuffleOrder.length) {
       if (repeatMode === 1) {
@@ -189,8 +240,8 @@ function getNextIndex() {
   } else {
     let next = currentIdx + 1;
     if (next >= songs.length) {
-      if (repeatMode === 1) return 0;
-      return -1;
+      if (repeatMode === 1) return 0; // Repeat all - go to first
+      return -1; // Stop at end
     }
     return next;
   }
@@ -199,21 +250,41 @@ function getNextIndex() {
 function getPrevIndex() {
   if (isShuffling) {
     shufflePosition--;
-    if (shufflePosition < 0) shufflePosition = shuffleOrder.length - 1;
+    if (shufflePosition < 0) {
+      if (repeatMode === 1) {
+        shufflePosition = shuffleOrder.length - 1;
+      } else {
+        shufflePosition = 0;
+        return -1;
+      }
+    }
     return shuffleOrder[shufflePosition];
   } else {
-    return (currentIdx - 1 + songs.length) % songs.length;
+    if (currentIdx <= 0) {
+      if (repeatMode === 1) return songs.length - 1;
+      return -1;
+    }
+    return currentIdx - 1;
   }
 }
 
-// FIXED: Guarded handleTrackEnd for glitch #1
 async function handleTrackEnd() {
-  if (isHandlingEnded || isCrossfading) return;
+  if (isHandlingEnded) return;
+
+  // If crossfading, the crossfade will handle it. But if we're here,
+  // crossfade likely failed. Reset and continue.
+  if (isCrossfading) {
+    console.log('Ended fired during crossfade - forcing reset');
+    isCrossfading = false;
+  }
+
   isHandlingEnded = true;
 
   if (repeatMode === 2) {
     activeAudio.currentTime = 0;
-    activeAudio.play();
+    activeAudio.play().catch(e => {
+      if (e.name!== 'AbortError') console.log('Repeat play failed:', e);
+    });
     isHandlingEnded = false;
     return;
   }
@@ -224,21 +295,28 @@ async function handleTrackEnd() {
   } else {
     isPlaying = false;
     playBtn.textContent = '▶️';
+    activeAudio.currentTime = 0;
     updateMediaSessionState();
   }
 
   setTimeout(() => isHandlingEnded = false, 150);
 }
 
+// FIX 3: Proper play promise handling
 async function loadSong(idx, shouldPlay = true) {
-  currentIdx = idx; // Force sync immediately - FIX for glitch #1
+  currentIdx = idx;
   const song = songs[idx];
   if (!song) return;
 
   await initAudio();
   if (audioCtx.state === 'suspended') await audioCtx.resume();
 
-  activeAudio.pause();
+  // Ensure clean state before loading
+  if (!activeAudio.paused) {
+    activeAudio.pause();
+    await new Promise(r => setTimeout(r, 0));
+  }
+
   if (activeGain) {
     activeGain.gain.cancelScheduledValues(audioCtx.currentTime);
     activeGain.gain.setValueAtTime(parseFloat(volume.value) || 1, audioCtx.currentTime);
@@ -249,23 +327,35 @@ async function loadSong(idx, shouldPlay = true) {
   }
 
   if (isShuffling) shufflePosition = shuffleOrder.indexOf(idx);
-  if (activeAudio.src) URL.revokeObjectURL(activeAudio.src);
-  activeAudio.src = URL.createObjectURL(song.blob);
+
+  // DELETE THIS LINE: if (activeAudio.src) URL.revokeObjectURL(activeAudio.src);
+  activeAudio.src = URL.createObjectURL(song.blob); // KEEP THIS - just overwrite
   activeAudio.load();
-  setAlbumArt(song.blob);
+
+  await setAlbumArt(song.blob);
   updateUI(song);
-  updateMediaSession(song); // FIX for glitch #2
+  updateMediaSession(song);
   renderPlaylist();
   drawWaveform(song.blob).catch(() => {});
   preloadNextSong();
 
   if (shouldPlay) {
     try {
+      // Wait for audio to be ready
+      if (activeAudio.readyState < 2) {
+        await new Promise(resolve => {
+          activeAudio.addEventListener('canplay', resolve, { once: true });
+        });
+      }
       await activeAudio.play();
       isPlaying = true;
       playBtn.textContent = '⏸️';
       updateMediaSessionState();
-    } catch {}
+    } catch (e) {
+      if (e.name!== 'AbortError') console.log('Play failed:', e);
+      isPlaying = false;
+      playBtn.textContent = '▶️';
+    }
   }
 }
 
@@ -275,13 +365,14 @@ function preloadNextSong() {
   if (nextIdx === -1 || nextIdx === currentIdx) return;
   const nextSong = songs[nextIdx];
   if (!nextSong || nextAudio.dataset.songIdx == nextIdx) return;
-  if (nextAudio.src) URL.revokeObjectURL(nextAudio.src);
-  nextAudio.src = URL.createObjectURL(nextSong.blob);
+
+  // DELETE: if (nextAudio.src) URL.revokeObjectURL(nextAudio.src);
+  nextAudio.src = URL.createObjectURL(nextSong.blob); // Just overwrite
   nextAudio.dataset.songIdx = nextIdx;
   nextAudio.load();
 }
 
-// ===== Media Session API - FIX for glitch #2 =====
+// ===== Media Session API =====
 function updateMediaSession(song) {
   if ('mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({
@@ -309,10 +400,14 @@ function setupMediaSessionHandlers() {
       if (currentIdx === -1 && songs.length > 0) {
         await loadSong(0, true);
       } else {
-        await activeAudio.play();
-        isPlaying = true;
-        playBtn.textContent = '⏸️';
-        updateMediaSessionState();
+        try {
+          await activeAudio.play();
+          isPlaying = true;
+          playBtn.textContent = '⏸️';
+          updateMediaSessionState();
+        } catch (e) {
+          if (e.name!== 'AbortError') console.log('MediaSession play failed:', e);
+        }
       }
     });
 
@@ -323,14 +418,8 @@ function setupMediaSessionHandlers() {
       updateMediaSessionState();
     });
 
-    navigator.mediaSession.setActionHandler('previoustrack', () => {
-      prevSong();
-    });
-
-    navigator.mediaSession.setActionHandler('nexttrack', () => {
-      nextSong();
-    });
-
+    navigator.mediaSession.setActionHandler('previoustrack', () => prevSong());
+    navigator.mediaSession.setActionHandler('nexttrack', () => nextSong());
     navigator.mediaSession.setActionHandler('seekto', (details) => {
       if (details.seekTime) activeAudio.currentTime = details.seekTime;
     });
@@ -348,10 +437,14 @@ playBtn.addEventListener('click', async () => {
     return;
   }
   if (activeAudio.paused) {
-    await activeAudio.play();
-    isPlaying = true;
-    playBtn.textContent = '⏸️';
-    updateMediaSessionState();
+    try {
+      await activeAudio.play();
+      isPlaying = true;
+      playBtn.textContent = '⏸️';
+      updateMediaSessionState();
+    } catch (e) {
+      if (e.name!== 'AbortError') console.log('Play failed:', e);
+    }
   } else {
     activeAudio.pause();
     isPlaying = false;
@@ -365,9 +458,18 @@ function nextSong() {
   if (next!== -1) loadSong(next, true);
 }
 
+// FIX 4: Prev with proper error handling
 function prevSong() {
+  if (activeAudio.currentTime > 3) {
+    activeAudio.currentTime = 0;
+    activeAudio.play().catch(e => {
+      if (e.name!== 'AbortError') console.log('Prev restart failed:', e);
+    });
+    return;
+  }
+
   const prev = getPrevIndex();
-  loadSong(prev, true);
+  if (prev!== -1) loadSong(prev, true);
 }
 
 nextBtn.onclick = nextSong;
@@ -431,24 +533,33 @@ function updateUI(song) {
   nowTitle.textContent = song.title;
   nowArtist.textContent = song.artist;
 }
-
-function setAlbumArt(file) {
-  if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+async function setAlbumArt(file) {
   albumArt.src = DEFAULT_ART;
-  if (!file) return;
-  jsmediatags.read(file, {
-    onSuccess: tag => {
-      if (tag.tags.picture) {
-        const blob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
-        currentBlobUrl = URL.createObjectURL(blob);
-        albumArt.src = currentBlobUrl;
-      }
-    },
-    onError: () => { albumArt.src = DEFAULT_ART; }
+  const song = songs[currentIdx];
+  if (!file ||!song) return;
+
+  return new Promise((resolve) => {
+    jsmediatags.read(file, {
+      onSuccess: tag => {
+        if (tag.tags.picture) {
+          try {
+            const newBlob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
+            song.artUrl = URL.createObjectURL(newBlob); // Just overwrite, don't revoke old
+            albumArt.src = song.artUrl;
+          } catch (e) {
+            console.warn('Art extraction failed:', e);
+            song.artUrl = DEFAULT_ART;
+          }
+        }
+        resolve();
+      },
+      onError: () => resolve()
+    });
   });
 }
 
 function renderPlaylist() {
+  
   const list = searchInput && searchInput.value? songs.filter(s => s.title.toLowerCase().includes(searchInput.value.toLowerCase())) : songs;
   songList.innerHTML = list.map((s) => {
     const realIdx = songs.indexOf(s);
@@ -496,29 +607,19 @@ async function handleFiles(fileList) {
       blob: file,
       artUrl: DEFAULT_ART
     };
-    songs.push(song);
-
-    renderPlaylist();
-    if (currentIdx === -1 && songs.length === 1) loadSong(0, false);
 
     try {
-      const meta = await readTagsAndArt(file);
+      const meta = await readTagsAndArt(file); // Read FIRST
       song.title = meta.title;
       song.artist = meta.artist;
-      song.artUrl = meta.artUrl;
-
-      const idx = songs.length - 1;
-      const row = songList.querySelector(`li[data-idx="${idx}"]`);
-      if (row) {
-        row.querySelector('.song-title').textContent = song.title;
-        row.querySelector('.song-artist').textContent = song.artist;
-        row.querySelector('.song-thumb').src = song.artUrl;
-      }
-      if (currentIdx === idx) updateUI(song);
-
+      song.artUrl = meta.artUrl; // No revokes in readTagsAndArt
     } catch (err) {
       console.warn('Tag read failed for', file.name, err);
     }
+
+    songs.push(song); // Push AFTER we have the final artUrl
+    renderPlaylist(); // Render ONCE per song, with correct blob
+    if (currentIdx === -1 && songs.length === 1) loadSong(0, false);
 
     await new Promise(r => setTimeout(r, 0));
   }
@@ -532,27 +633,28 @@ fileInput.onchange = e => handleFiles(e.target.files);
 folderInput.onchange = e => handleFiles(e.target.files);
 
 async function readTagsAndArt(file) {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     jsmediatags.read(file, {
       onSuccess: tag => {
-        let artUrl = DEFAULT_ART;
-        try {
-          if (tag.tags.picture) {
-            const blob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
-            artUrl = URL.createObjectURL(blob);
-          }
-        } catch (e) {
-          console.warn('Art extraction failed:', e);
-        }
-        resolve({
+        const result = {
           title: tag.tags.title || file.name.replace(/\.[^/.]+$/, ""),
-          artist: tag.tags.artist || 'Unknown',
-          artUrl: artUrl
-        });
+          artist: tag.tags.artist || 'Unknown Artist',
+          artUrl: DEFAULT_ART
+        };
+
+        if (tag.tags.picture) {
+          try {
+            const blob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
+            result.artUrl = URL.createObjectURL(blob); // NO REVOKE HERE
+          } catch (e) {
+            console.warn('Art extraction failed:', e);
+          }
+        }
+        resolve(result);
       },
       onError: () => resolve({
         title: file.name.replace(/\.[^/.]+$/, ""),
-        artist: 'Unknown',
+        artist: 'Unknown Artist',
         artUrl: DEFAULT_ART
       })
     });
@@ -622,18 +724,77 @@ function drawSpectrum() {
   if (!canvas ||!analyser) return;
   const ctx = canvas.getContext('2d');
   const data = new Uint8Array(analyser.frequencyBinCount);
+
+  const barCount = 24;
+  const peaks = new Array(barCount).fill(0);
+  const peakHoldTime = new Array(barCount).fill(0);
+
   function loop() {
     requestAnimationFrame(loop);
     analyser.getByteFrequencyData(data);
-    canvas.width = canvas.offsetWidth;
-    canvas.height = canvas.offsetHeight;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const bw = canvas.width / 24;
-    for (let i = 0; i < 24; i++) {
-      const bh = data[i * 4] / 255 * canvas.height;
-      ctx.fillStyle = i < 8? '#aa4444' : i < 16? '#aa8844' : '#44aa44';
-      ctx.fillRect(i * bw, canvas.height - bh, bw - 1, bh);
+
+    const w = 90;
+    const h = 80;
+    canvas.width = w;
+    canvas.height = h;
+    ctx.clearRect(0, 0, w, h);
+
+    // Gradient - halfway between bright and dimmed
+const grad = ctx.createLinearGradient(0, 0, w, 0);
+grad.addColorStop(0, '#d90000'); // Brighter than #b30000, darker than #ff0000
+grad.addColorStop(0.25, '#d94d00');
+grad.addColorStop(0.45, '#d9d900');
+grad.addColorStop(0.6, '#77d900');
+grad.addColorStop(0.75, '#00d900');
+grad.addColorStop(1, '#00d977');
+
+    for (let i = 0; i < barCount; i++) {
+      const bin = Math.floor((i / barCount) * data.length);
+      const val = data[bin] / 255;
+      const bh = val * h * 0.9;
+
+      const x = Math.floor((i / barCount) * w);
+      const nextX = Math.floor(((i + 1) / barCount) * w);
+      const barWidth = nextX - x;
+      const y = h - bh;
+
+      let glowColor = '#b30000';
+      if (i > barCount * 0.25) glowColor = '#b3b300';
+      if (i > barCount * 0.45) glowColor = '#66b300';
+      if (i > barCount * 0.6) glowColor = '#00b300';
+
+      // Reduced glow + add transparency
+      ctx.shadowBlur = 2; // Was 4
+      ctx.shadowColor = glowColor;
+      ctx.fillStyle = grad;
+      ctx.globalAlpha = 0.85; // Tone down overall brightness
+      ctx.fillRect(x, y, barWidth, bh);
+      ctx.globalAlpha = 3;
+
+      // Dimmer cap
+      ctx.shadowBlur = 3;
+      ctx.shadowColor = 'rgba(255, 255, 255, 0.5)'; // Was 0.9
+      ctx.fillStyle = 'rgba(200, 200, 200, 0.7)';
+      ctx.fillRect(x, y, barWidth, 1);
+
+      if (bh > peaks[i]) {
+        peaks[i] = bh;
+        peakHoldTime[i] = Date.now();
+      } else {
+        if (Date.now() - peakHoldTime[i] > 600) {
+          peaks[i] *= 0.9;
+        }
+      }
+
+      if (peaks[i] > 1) {
+        const peakY = h - peaks[i];
+        ctx.shadowBlur = 3;
+        ctx.shadowColor = glowColor;
+        ctx.fillStyle = 'rgba(200, 200, 200, 0.6)';
+        ctx.fillRect(x, peakY - 1, barWidth, 1.5);
+      }
     }
+    ctx.shadowBlur = 0;
   }
   loop();
 }
@@ -655,10 +816,9 @@ searchInput.addEventListener('input', renderPlaylist);
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js')
-   .then(reg => console.log('SW registered'))
-   .catch(err => console.log('SW failed: ', err));
+  .then(reg => console.log('SW registered'))
+  .catch(err => console.log('SW failed: ', err));
   });
 }
 
-// Initialize Media Session handlers
 setupMediaSessionHandlers();
