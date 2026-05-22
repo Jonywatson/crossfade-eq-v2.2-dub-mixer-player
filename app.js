@@ -733,20 +733,20 @@ function drawSpectrum() {
     requestAnimationFrame(loop);
     analyser.getByteFrequencyData(data);
 
-    const w = 68;
-    const h = 80;
+    // Read actual CSS size - works for 68x80 or 80x100
+    const w = canvas.offsetWidth;
+    const h = canvas.offsetHeight;
     canvas.width = w;
     canvas.height = h;
     ctx.clearRect(0, 0, w, h);
 
-    // Gradient - halfway between bright and dimmed
-const grad = ctx.createLinearGradient(0, 0, w, 0);
-grad.addColorStop(0, '#ff0000'); // Brighter than #b30000, darker than #ff0000
-grad.addColorStop(0.25, '#d94d00');
-grad.addColorStop(0.45, '#d9d900');
-grad.addColorStop(0.6, '#77d900');
-grad.addColorStop(0.75, '#00ff00');
-grad.addColorStop(1, '#00ff00');
+    const grad = ctx.createLinearGradient(0, 0, w, 0);
+    grad.addColorStop(0, '#b30000');
+    grad.addColorStop(0.25, '#b33d00');
+    grad.addColorStop(0.45, '#b3b300');
+    grad.addColorStop(0.6, '#66b300');
+    grad.addColorStop(0.75, '#00b300');
+    grad.addColorStop(1, '#00b366');
 
     for (let i = 0; i < barCount; i++) {
       const bin = Math.floor((i / barCount) * data.length);
@@ -763,17 +763,17 @@ grad.addColorStop(1, '#00ff00');
       if (i > barCount * 0.45) glowColor = '#66b300';
       if (i > barCount * 0.6) glowColor = '#00b300';
 
-      // Reduced glow + add transparency
-      ctx.shadowBlur = 2; // Was 4
+      // Bar
+      ctx.shadowBlur = 2;
       ctx.shadowColor = glowColor;
       ctx.fillStyle = grad;
-      ctx.globalAlpha = 0.85; // Tone down overall brightness
+      ctx.globalAlpha = 0.85;
       ctx.fillRect(x, y, barWidth, bh);
-      ctx.globalAlpha = 3;
+      ctx.globalAlpha = 1;
 
-      // Dimmer cap
+      // Cap
       ctx.shadowBlur = 3;
-      ctx.shadowColor = 'rgba(255, 255, 255, 0.5)'; // Was 0.9
+      ctx.shadowColor = 'rgba(255, 255, 255, 0.5)';
       ctx.fillStyle = 'rgba(200, 200, 200, 0.7)';
       ctx.fillRect(x, y, barWidth, 1);
 
@@ -786,15 +786,22 @@ grad.addColorStop(1, '#00ff00');
         }
       }
 
+      // Peak hold - FIXED: kill shadow before drawing
       if (peaks[i] > 1) {
         const peakY = h - peaks[i];
-        ctx.shadowBlur = 3;
-        ctx.shadowColor = glowColor;
-        ctx.fillStyle = 'rgba(200, 200, 200, 0.6)';
+
+        // Reset shadow so peaks don't look out of sync/bleedy
+        ctx.shadowBlur = 0;
+        ctx.shadowColor = 'transparent';
+
+        ctx.fillStyle = 'rgba(200, 200, 200, 0.8)';
         ctx.fillRect(x, peakY - 1, barWidth, 1.5);
+
+        // Restore shadow for next bar if needed
+        // Actually not needed - loop sets it again at top
       }
     }
-    ctx.shadowBlur = 0;
+    ctx.shadowBlur = 0; // Final safety reset
   }
   loop();
 }
