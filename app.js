@@ -6,6 +6,7 @@ let isShuffling = false, shuffleOrder = [], shufflePosition = 0;
 let audioCtx = null, analyser = null, eqChain = [], activeGain, nextGain, isCrossfading = false;
 let crossfadeMs = 2000, lastVolume = 1, waveformData = [];
 let isHandlingEnded = false;
+let currentSwipeTarget = null;
 
 const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const audio = document.getElementById('audio');
@@ -26,23 +27,34 @@ const nowTitle = document.getElementById('now-title'), nowArtist = document.getE
 const albumArt = document.getElementById('album-art');
 const playerContainer = document.querySelector('.album-art-container'); // Change this selector
 
-playerContainer.addEventListener('touchstart', (e) => {
-  if (e.target.id === 'album-art') {
+document.addEventListener('touchstart', (e) => {
+  const art = e.target.closest('#album-art,.song-thumb');
+  if (art) {
     e.preventDefault();
+    currentSwipeTarget = art;
     handleTouchStart(e);
   }
 }, {passive: false});
 
-playerContainer.addEventListener('touchmove', (e) => {
-  if (e.target.id === 'album-art') {
+document.addEventListener('touchmove', (e) => {
+  if (isSwiping) {
     e.preventDefault();
     handleTouchMove(e);
   }
 }, {passive: false});
 
-playerContainer.addEventListener('touchend', (e) => {
-  if (e.target.id === 'album-art') {
+document.addEventListener('touchend', (e) => {
+  if (isSwiping) {
     handleTouchEnd(e);
+    currentSwipeTarget = null;
+  }
+});
+
+document.addEventListener('touchcancel', (e) => {
+  if (isSwiping) {
+    currentSwipeTarget.style.transform = 'translateX(0px)';
+    isSwiping = false;
+    currentSwipeTarget = null;
   }
 });
 
@@ -872,9 +884,9 @@ function handleTouchEnd(e) {
   albumArt.style.transition = 'transform 0.3s ease-out';
 
   if (diffX > swipeThreshold) {
-    prevTrack(); // Swiped right
+    prevSong(); // Swiped right
   } else if (diffX < -swipeThreshold) {
-    nextTrack(); // Swiped left
+    nextSong(); // Swiped left
   }
 
   albumArt.style.transform = 'translateX(0px)';
@@ -894,11 +906,6 @@ deleteStuckBtn.onclick = () => {
 };
 
 searchInput.addEventListener('input', renderPlaylist);
-
-
-albumArt.addEventListener('touchstart', handleTouchStart, {passive: false});
-albumArt.addEventListener('touchmove', handleTouchMove, {passive: false});
-albumArt.addEventListener('touchend', handleTouchEnd);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
