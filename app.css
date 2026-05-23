@@ -329,6 +329,17 @@ will-change: transform;}
 #eq-reset { background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 20px; padding: 6px 16px; font-size: 12px; cursor: pointer; }
 #eq-reset:active { background: #1ed760; color: #000; }
 
+/* Check parent containers for this */
+.some-parent {
+  pointer-events: none; /* This kills touches for all children */
+}
+
+/* Or check if something overlays the art */
+.some-overlay {
+  position: absolute;
+  z-index: 9999; /* Sitting on top of the img */
+}
+
 /* Mobile bump - more visible on high-DPI */
 @media (max-width: 480px) {
   #spectrum {
