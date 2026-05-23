@@ -29,7 +29,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
   flex-shrink: 0; /* NEW: don't let spectrum compress */
 }
 
-.album-art-container { width: 65px; height: 65px; flex-shrink: 0; align-self: center;}
+.album-art-container { width: 65px; height: 65px; flex-shrink: 0; align-self: center; margin-right: 6px;}
 #album-art { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
 
 /* NEW: Wrap title + artist so we can make it shrink */
