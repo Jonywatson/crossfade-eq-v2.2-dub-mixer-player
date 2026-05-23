@@ -819,6 +819,7 @@ function drawSpectrum() {
 }
 
 function handleTouchStart(e) {
+  console.log('touchstart fired', e.touches.length);
   touchStartX = e.changedTouches[0].screenX;
   touchStartY = e.changedTouches[0].screenY;
   lastTouchX = touchStartX;
