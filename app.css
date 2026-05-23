@@ -82,8 +82,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
 }
 
 /* Optional: make delete button red */
-.folder-actions button.delete { 
-  background: #e22134; 
+.folder-actions #delete-stuck { 
+  background: #f12929ae; 
   color: #fff; 
 }
 
@@ -143,7 +143,20 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
 .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .controls button { background: none; border: none; color: #b3b3b3; font-size: 20px; cursor: pointer; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; position: relative; }
 #play { font-size: 24px; }
-#shuffle.active, #repeat.active { color: #1ed760; }
+#shuffle.active, #repeat.active { color: #1ed760; text-shadow: 0 0 12px rgba(0, 255, 136, 0.8), /* NEW: bigger glow */
+               0 0 20px rgba(0, 255, 136, 0.4);  /* second layer for more bloom */ /* NEW: adds the glow */
+  position: relative;}
+/* NEW: dot indicator for both shuffle and repeat when active */
+#shuffle.active::after, #repeat.active::after {
+  content: '•';
+  position: absolute;
+  bottom: 1px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 18px;
+  line-height: 1;
+  color: #1ed760;
+}
 
 /* NEW: Repeat one badge */
 #repeat.repeat-one::after {

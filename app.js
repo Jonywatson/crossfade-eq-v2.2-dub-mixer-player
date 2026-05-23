@@ -11,6 +11,8 @@ const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const audio = document.getElementById('audio');
 const audioNext = document.getElementById('audio-next');
 let activeAudio = audio, nextAudio = audioNext;
+//const shuffleBtn = document.getElementById('shuffle');
+let isShuffle = false;
 
 const playBtn = document.getElementById('play'), prevBtn = document.getElementById('prev'), nextBtn = document.getElementById('next');
 const shuffleBtn = document.getElementById('shuffle'), repeatBtn = document.getElementById('repeat');
@@ -819,6 +821,19 @@ deleteStuckBtn.onclick = () => {
 };
 
 searchInput.addEventListener('input', renderPlaylist);
+
+shuffleBtn.addEventListener('click', () => {
+  isShuffle = !isShuffle;
+  shuffleBtn.classList.toggle('active', isShuffle);
+  
+  if (isShuffle) {
+    console.log('Shuffle ON');
+    // shufflePlaylist();
+  } else {
+    console.log('Shuffle OFF');
+    // restorePlaylistOrder();
+  }
+});
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
