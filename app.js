@@ -27,6 +27,7 @@ const volume = document.getElementById('volume'), volumeBtn = document.getElemen
 const timer = document.getElementById('timer'), waveformCanvas = document.getElementById('waveform');
 const fadeSlider = document.getElementById('fade-slider'), fadeTimeLabel = document.getElementById('fade-time');
 
+
 const DEFAULT_ART = './assets/default-art.svg';
 crossfadeMs = parseInt(fadeSlider.value);
 
@@ -39,6 +40,15 @@ const EQ_PRESETS = {
   vocal: [-3,-2,0,2,4,5,4,2,0,-1],
   electronic: [4,5,3,1,0,-1,1,3,5,6]
 };
+
+// Add these right after your declarations, before functions
+let touchStartX = 0;
+let touchEndX = 0;
+let touchStartY = 0;
+let isSwiping = false;
+let touchStartTime = 0;
+let lastTouchX = 0;
+let velocity = 0;
 
 // ===== Audio Engine =====
 async function initAudio() {
@@ -808,6 +818,103 @@ function drawSpectrum() {
   loop();
 }
 
+function handleTouchStart(e) {
+  touchStartX = e.changedTouches[0].screenX;
+  touchStartY = e.changedTouches[0].screenY;
+  lastTouchX = touchStartX;
+  touchStartTime = Date.now();
+  isSwiping = false;
+  velocity = 0;
+
+  // Cancel any ongoing snap-back animation
+  albumArt.classList.remove('snap-back');
+}
+
+function handleTouchMove(e) {
+  const currentX = e.changedTouches[0].screenX;
+  const currentY = e.changedTouches[0].screenY;
+  const deltaX = currentX - touchStartX;
+  const deltaY = Math.abs(currentY - touchStartY);
+
+  // Calculate velocity for flick detection
+  const timeDelta = Date.now() - touchStartTime;
+  if (timeDelta > 0) {
+    velocity = (currentX - lastTouchX) / timeDelta; // px/ms
+  }
+  lastTouchX = currentX;
+
+  // Only start swiping if horizontal > vertical and moved enough
+  if (!isSwiping && Math.abs(deltaX) > deltaY && Math.abs(deltaX) > 8) {
+    isSwiping = true;
+    albumArt.classList.add('swiping');
+  }
+
+  if (isSwiping) {
+    // Add resistance when dragging past halfway
+    const maxDrag = albumArt.offsetWidth * 0.6;
+    let resistedDelta = deltaX;
+
+    if (Math.abs(deltaX) > maxDrag) {
+      const overflow = Math.abs(deltaX) - maxDrag;
+      const resistance = 0.3; // 30% movement after threshold
+      resistedDelta = (deltaX > 0? maxDrag : -maxDrag) + (overflow * resistance) * Math.sign(deltaX);
+    }
+
+    albumArt.style.transform = `translateX(${resistedDelta}px)`;
+    e.preventDefault(); // stop page scroll
+  }
+}
+
+function handleTouchEnd(e) {
+  if (!isSwiping) {
+    albumArt.style.transform = '';
+    return;
+  }
+
+  albumArt.classList.remove('swiping');
+  touchEndX = e.changedTouches[0].screenX;
+  const deltaX = touchEndX - touchStartX;
+  const absVelocity = Math.abs(velocity);
+
+  // Thresholds: distance OR velocity can trigger swipe
+  const distanceThreshold = albumArt.offsetWidth * 0.25; // 25% of art width
+  const velocityThreshold = 0.5; // px/ms = 500px/sec
+
+  const shouldSwipe = Math.abs(deltaX) > distanceThreshold || absVelocity > velocityThreshold;
+
+  if (shouldSwipe) {
+    // Swipe succeeded - slide out then trigger
+    const direction = deltaX > 0? 1 : -1;
+    albumArt.style.transition = 'transform 0.2s ease-out';
+    albumArt.style.transform = `translateX(${direction * albumArt.offsetWidth}px)`;
+    albumArt.style.opacity = '0';
+
+    if (navigator.vibrate) navigator.vibrate(10);
+
+    setTimeout(() => {
+      deltaX > 0? prevSong() : nextSong();
+      // Reset for next track
+      albumArt.style.transition = 'none';
+      albumArt.style.transform = '';
+      albumArt.style.opacity = '1';
+    }, 200);
+
+  } else {
+    // Snap back
+    albumArt.classList.add('snap-back');
+    albumArt.style.transform = '';
+
+    setTimeout(() => albumArt.classList.remove('snap-back'), 300);
+  }
+
+  isSwiping = false;
+  velocity = 0;
+}
+
+function handleSwipe() {
+  // Not needed anymore - logic moved to handleTouchEnd
+}
+
 // ===== Cleanup + Init =====
 deleteStuckBtn.onclick = () => {
   songs.forEach(s => { if (s.artUrl && s.artUrl.startsWith('blob:')) URL.revokeObjectURL(s.artUrl); });
@@ -822,18 +929,10 @@ deleteStuckBtn.onclick = () => {
 
 searchInput.addEventListener('input', renderPlaylist);
 
-shuffleBtn.addEventListener('click', () => {
-  isShuffle = !isShuffle;
-  shuffleBtn.classList.toggle('active', isShuffle);
-  
-  if (isShuffle) {
-    console.log('Shuffle ON');
-    // shufflePlaylist();
-  } else {
-    console.log('Shuffle OFF');
-    // restorePlaylistOrder();
-  }
-});
+
+albumArt.addEventListener('touchstart', handleTouchStart, {passive: false});
+albumArt.addEventListener('touchmove', handleTouchMove, {passive: false});
+albumArt.addEventListener('touchend', handleTouchEnd);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
