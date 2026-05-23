@@ -83,8 +83,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
 
 /* Optional: make delete button red */
 .folder-actions #delete-stuck { 
-  background: #f12929ae; 
-  color: #fff; 
+  color: #f0cecc; /* iOS-style red */
+  filter: drop-shadow(0 0 6px rgba(255, 59, 48, 0.8))
+          drop-shadow(0 0 12px rgba(255, 59, 48, 0.5));
+  transform: translateZ(0);
+  will-change: filter; 
 }
 
 #search { 
