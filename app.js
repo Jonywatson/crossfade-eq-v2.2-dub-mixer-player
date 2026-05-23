@@ -86,7 +86,9 @@ let isSwiping = false;
 let touchStartTime = 0;
 let lastTouchX = 0;
 let velocity = 0;
-const swipeThreshold = 50; // Add this one if it's not there yet
+const swipeThreshold = 50; 
+
+let audioContext, source, filters = [];
 
 // ===== Audio Engine =====
 async function initAudio() {
@@ -102,6 +104,7 @@ async function initAudio() {
   const preGain = audioCtx.createGain();
   preGain.gain.value = 0.707;
 
+  // Build EQ chain
   eqChain = EQ_BANDS.map((f, i) => {
     const filter = audioCtx.createBiquadFilter();
     filter.type = i === 0? 'lowshelf' : i === 9? 'highshelf' : 'peaking';
@@ -111,18 +114,38 @@ async function initAudio() {
     return filter;
   });
 
+  // FIXED: Actually chain the EQ filters
+  eqChain.reduce((prev, curr) => {
+    prev.connect(curr);
+    return curr;
+  });
+
   const activeSource = audioCtx.createMediaElementSource(activeAudio);
   const nextSource = audioCtx.createMediaElementSource(nextAudio);
+
+  // Sources -> EQ start
   activeSource.connect(eqChain[0]);
   nextSource.connect(eqChain[0]);
-  eqChain.reduce((a, b) => a.connect(b));
-  eqChain[eqChain.length - 1].connect(preGain);
-  preGain.connect(activeGain).connect(audioCtx.destination);
-  preGain.connect(nextGain).connect(audioCtx.destination);
 
+  // EQ end -> preGain
+  eqChain[eqChain.length - 1].connect(preGain);
+
+  // CRITICAL FIX: Create a mix bus for analyser to tap
+  const mixBus = audioCtx.createGain();
+  mixBus.gain.value = 1;
+
+  // preGain -> crossfade gains -> mixBus -> destination
+  preGain.connect(activeGain);
+  preGain.connect(nextGain);
+  activeGain.connect(mixBus);
+  nextGain.connect(mixBus);
+  mixBus.connect(audioCtx.destination);
+
+  // FIXED: Analyser taps the final mix, not preGain
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 256;
-  preGain.connect(analyser);
+  analyser.smoothingTimeConstant = 0.8;
+  mixBus.connect(analyser); // Now it hears the actual crossfaded output
 
   activeAudio.addEventListener('timeupdate', onTimeUpdate);
   activeAudio.addEventListener('ended', handleTrackEnd);
@@ -130,6 +153,7 @@ async function initAudio() {
 
   setupEQSliders();
   console.log('WebAudio 10-Band ready');
+  console.log('AudioContext state:', audioCtx.state);
   drawSpectrum();
 }
 
@@ -782,6 +806,11 @@ function drawSpectrum() {
   function loop() {
     requestAnimationFrame(loop);
     analyser.getByteFrequencyData(data);
+
+    // ADD IT RIGHT HERE - after getting data, before drawing
+  const energy = data.reduce((a, b) => a + b, 0) / data.length;
+  const normalized = energy / 255;
+  ctx.globalAlpha = 0.3 + normalized * 0.7; // fades when quiet, pops when loud
 
     // Read actual CSS size - works for 68x80 or 80x100
     const w = canvas.offsetWidth;
