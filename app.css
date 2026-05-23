@@ -4,7 +4,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
 .app { display: flex; flex-direction: column; height: 100vh; }
 
 .top-fixed { position: fixed; top: env(safe-area-inset-top, 0); left: 0; right: 0; z-index: 100; background: #121212; padding: 10px 12px; }
-.top-row { display: flex; gap: 4px; align-items: center; margin-bottom: 8px; }
+
+/* CHANGED: align-items flex-start so tall button stack aligns to top */
+.top-row { 
+  display: flex; 
+  gap: 4px; 
+  align-items: center; 
+  margin-bottom: 8px; 
+  border-right: 1px solid rgba(255,255,255,0.1);
+  min-height: 80px;
+  border-right: 1px solid rgba(255,255,255,0.1);
+}
+
 #spectrum {
   width: 100%;  /* was 68px */
   height: 80px;
@@ -15,17 +26,77 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
 }
 #spectrum-wrapper {  /* whatever your parent class is */
   width: 80px; /* match canvas */
+  flex-shrink: 0; /* NEW: don't let spectrum compress */
 }
 
-
-.album-art-container { width: 70px; height: 70px; flex-shrink: 0; }
+.album-art-container { width: 65px; height: 65px; flex-shrink: 0; align-self: center;}
 #album-art { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
-#now-title { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
-#now-artist { font-size: 11px; color: #b3b3b3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
 
-.folder-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(85px, 1fr)); gap: 4px; }
-.folder-actions button { background: #1DB954; border: none; padding: 3px 4px; border-radius: 20px; color: #000; font-weight: 600; cursor: pointer; font-size: 11px; }
-#search { grid-column: 1 / -1; margin-top: 6px; padding: 6px 8px; background: #282828; border: 1px solid #444; color: #fff; border-radius: 4px; }
+/* NEW: Wrap title + artist so we can make it shrink */
+.now-meta {
+  flex: 1 1 auto; /* take all remaining space */
+  min-width: 0;   /* CRITICAL: allows ellipsis to work in flex */
+  overflow: hidden;
+  align-self: center; 
+  padding-top: 8px;
+}
+
+#now-title { 
+  font-weight: 600; 
+  font-size: 12px; 
+  white-space: nowrap; 
+  overflow: hidden; 
+  text-overflow: ellipsis;
+  display: block; /* NEW: needed for ellipsis */
+}
+#now-artist { 
+  font-size: 11px; 
+  color: #b3b3b3; 
+  white-space: nowrap; 
+  overflow: hidden; 
+  text-overflow: ellipsis;
+  display: block; /* NEW: needed for ellipsis */
+}
+
+/* CHANGED: Full rewrite for fixed stacked buttons */
+.folder-actions { 
+  flex: 0 0 90px; /* no grow, no shrink, 90px basis */
+  width: 90px;
+  display: flex; 
+  flex-direction: column; /* stack vertically */
+  gap: 4px;
+}
+
+.folder-actions button { 
+  background: #1DB954; 
+  border: none; 
+  padding: 3px 4px; 
+  border-radius: 20px; 
+  color: #000; 
+  font-weight: 600; 
+  cursor: pointer; 
+  font-size: 11px;
+  width: 100%; /* fill 90px */
+  height: 22px; /* fixed height */
+  line-height: 1;
+}
+
+/* Optional: make delete button red */
+.folder-actions button.delete { 
+  background: #e22134; 
+  color: #fff; 
+}
+
+#search { 
+  margin-top: 6px; 
+  padding: 6px 8px; 
+  background: #282828; 
+  border: 1px solid #444; 
+  color: #fff; 
+  border-radius: 4px;
+  width: 100%; /* fills the 90px folder-actions box */
+  box-sizing: border-box;
+}
 
 .playlist { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px 12px; padding-top: 140px; }
 
