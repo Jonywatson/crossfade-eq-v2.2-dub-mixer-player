@@ -4,7 +4,7 @@ let songs = [], currentIdx = -1;
 let repeatMode = 0; // 0=off, 1=all, 2=one
 let isShuffling = false, shuffleOrder = [], shufflePosition = 0;
 let audioCtx = null, analyser = null, eqChain = [], activeGain, nextGain, isCrossfading = false;
-let crossfadeMs = 2000, lastVolume = 1, waveformData = [];
+let crossfadeMs = 5000, lastVolume = 1, waveformData = [];
 let isHandlingEnded = false;
 let currentSwipeTarget = null;
 
@@ -206,13 +206,12 @@ eqPresetDrawer.addEventListener('change', e => applyPreset(e.target.value));
 // ===== Crossfade + Repeat Logic =====
 function checkCrossfade() {
   if (crossfadeMs === 0 || isCrossfading ||!activeAudio.duration || songs.length < 2) return;
-  if (repeatMode === 2) return;
+  if (repeatMode === 2) return; // repeat one
   const timeLeft = activeAudio.duration - activeAudio.currentTime;
-  const fadeSec = crossfadeMs / 1000;
-  // FIX: Add 0.2s buffer so we don't crossfade too late
-  if (timeLeft <= fadeSec && timeLeft > fadeSec - 0.2) startCrossfade();
+  const fadeSec = Math.min(crossfadeMs / 1000, activeAudio.duration * 0.3); 
+  // Start exactly at fadeSec, not with buffer. Buffer causes early triggers
+  if (timeLeft <= fadeSec &&!isCrossfading) startCrossfade();
 }
-
 // FIX 2: Ensure art loads during crossfade
 async function startCrossfade() {
   let next = getNextIndex();
@@ -251,21 +250,32 @@ async function startCrossfade() {
     return;
   }
 
-  const now = audioCtx.currentTime, fadeTime = crossfadeMs / 1000;
+  const now = audioCtx.currentTime;
+  const fadeTime = crossfadeMs / 1000;
+  const targetVol = parseFloat(volume.value) || 1;
+
+  // CANCEL + EQUAL-POWER CURVES
   activeGain.gain.cancelScheduledValues(now);
   nextGain.gain.cancelScheduledValues(now);
-  activeGain.gain.setValueAtTime(activeGain.gain.value, now);
-  activeGain.gain.linearRampToValueAtTime(0, now + fadeTime);
-  nextGain.gain.setValueAtTime(0, now);
-  nextGain.gain.linearRampToValueAtTime(1, now + fadeTime);
 
-  // Extract swap logic so we can call it manually
+  // FIX 1: Exponential fade-out sounds natural
+  activeGain.gain.setValueAtTime(activeGain.gain.value || targetVol, now);
+  activeGain.gain.exponentialRampToValueAtTime(0.001, now + fadeTime); // 0.001 not 0
+
+  // FIX 2: Fade to user's volume, not 1
+  nextGain.gain.setValueAtTime(0.001, now); // Start from 0.001 not 0
+  nextGain.gain.exponentialRampToValueAtTime(targetVol, now + fadeTime);
+
   const doSwap = async () => {
     try {
       activeAudio.pause();
-      activeGain.gain.value = parseFloat(volume.value) || 1;
+      // FIX 3: Set final value explicitly so there's no pop
+      activeGain.gain.setValueAtTime(0, audioCtx.currentTime);
+      nextGain.gain.setValueAtTime(targetVol, audioCtx.currentTime);
+
       [activeAudio, nextAudio] = [nextAudio, activeAudio];
       [activeGain, nextGain] = [nextGain, activeGain];
+
       activeAudio.addEventListener('timeupdate', onTimeUpdate);
       currentIdx = next;
       await setAlbumArt(songs[currentIdx].blob);
@@ -282,14 +292,15 @@ async function startCrossfade() {
 
   const crossfadeTimeout = setTimeout(doSwap, crossfadeMs);
 
-  // If activeAudio ends during crossfade, force swap early
   const forceSwap = () => {
     clearTimeout(crossfadeTimeout);
-    doSwap(); // Call directly, no._onTimeout()
+    // Cancel ramps before forced swap to prevent pops
+    activeGain.gain.cancelScheduledValues(audioCtx.currentTime);
+    nextGain.gain.cancelScheduledValues(audioCtx.currentTime);
+    doSwap();
   };
   activeAudio.addEventListener('ended', forceSwap, { once: true });
 }
-
 // ===== Playback Logic =====
 function getNextIndex() {
   if (repeatMode === 2) return currentIdx;
