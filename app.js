@@ -1,3 +1,11 @@
+// === DEBUG LOGGER ===
+const DEBUG = false; // Set to true when John Breaker needs to investigate
+const log = (...args) => DEBUG && console.log(...args);
+const warn = (...args) => DEBUG && console.warn(...args);
+const error = (...args) => console.error(...args); // Always show errors
+// ====================
+
+
 console.log('Crossfade Player v2.2.8 - EQ Fix + AbortError + Crossfade Art');
 
 let songs = [], currentIdx = -1;
@@ -7,6 +15,7 @@ let audioCtx = null, analyser = null, eqChain = [], activeGain, nextGain, isCros
 let crossfadeMs = 5000, lastVolume = 1, waveformData = [];
 let isHandlingEnded = false;
 let currentSwipeTarget = null;
+let crossfadeLock = -1; // -1 = idle, else = idx we're actively fading to
 
 const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const audio = document.getElementById('audio');
@@ -20,12 +29,81 @@ const shuffleBtn = document.getElementById('shuffle'), repeatBtn = document.getE
 const eqBtn = document.getElementById('eq-btn'), eqDrawer = document.getElementById('eq-drawer'), eqClose = document.getElementById('eq-close');
 const eqPreset = document.getElementById('eq-preset'), eqPresetDrawer = document.getElementById('eq-preset-drawer');
 const eqReset = document.getElementById('eq-reset');
-const fileInput = document.getElementById('file-input'), folderInput = document.getElementById('folder-input');
-const addSongsBtn = document.getElementById('add-songs-btn'), addFolderBtn = document.getElementById('add-folder-btn'), deleteStuckBtn = document.getElementById('delete-stuck');
+const fileInput = document.getElementById('file-input');
+const folderInput = document.getElementById('folder-input');
+const addSongsBtn = document.getElementById('add-songs-btn'); // THIS IS YOUR BUTTON
+const addFolderBtn = document.getElementById('add-folder-btn');
+log('fileInput found:')
+
+let clickCount = 0;
+addSongsBtn.addEventListener('click', () => {
+  clickCount++;
+  log('Add Songs clicked #', clickCount);
+  fileInput.click();
+});
+//const addSongsBtn = document.getElementById('add-songs-btn'), addFolderBtn = document.getElementById('add-folder-btn'); 
+const deleteStuckBtn = document.getElementById('delete-stuck');
 const songList = document.getElementById('song-list'), searchInput = document.getElementById('search');
 const nowTitle = document.getElementById('now-title'), nowArtist = document.getElementById('now-artist'); 
 const albumArt = document.getElementById('album-art');
 const playerContainer = document.querySelector('.album-art-container'); // Change this selector
+
+
+fileInput.addEventListener('change', async (e) => {
+  const rawFiles = Array.from(e.target.files);
+  log('RAW FILES:', rawFiles.map(f => ({name: f.name, type: f.type})));
+  
+  // Check extension, not MIME type
+  const files = rawFiles.filter(f => /\.(mp3|m4a|flac|ogg|wav|aac)$/i.test(f.name));
+  log('FILTERED FILES:', files.length);
+  
+  if (!files.length) {
+    console.log('No audio files after filter');
+    e.target.value = '';
+    return;
+  }
+  
+  for (const file of files) {
+    const songData = await new Promise(resolve => {
+      new jsmediatags.Reader(file).read({
+        onSuccess: (tag) => {
+          log('TAGS:', tag.tags.title, tag.tags.artist, tag.tags.album);
+          resolve({
+            id: crypto.randomUUID(),
+            title: tag.tags.title || file.name.replace(/\.[^/.]+$/, ""),
+            artist: tag.tags.artist || 'Unknown Artist',
+            album: tag.tags.album || '',
+            blob: file,
+            artUrl: './assets/default-art.svg'
+          });
+        },
+        onError: () => resolve({
+          id: crypto.randomUUID(),
+          title: file.name.replace(/\.[^/.]+$/, ""),
+          artist: 'Unknown Artist',
+          album: '',
+          blob: file,
+          artUrl: './assets/default-art.svg'
+        })
+      });
+    });
+    songs.push(songData);
+  }
+  
+  renderPlaylist();
+  e.target.value = '';
+  
+  if (isShuffling) generateShuffleOrder();
+  if (currentIdx === -1 && songs.length > 0) loadSong(0, false);
+});
+
+folderInput.addEventListener('change', (e) => {
+  log('FOLDER RAW FILES:', e.target.files);
+  const files = [...e.target.files];
+  log('FILTERED FOLDER FILES:', files.length);
+  handleFiles(files); // use the same handler as fileInput
+});
+
 
 document.addEventListener('touchstart', (e) => {
   const art = e.target.closest('#album-art,.song-thumb');
@@ -58,7 +136,7 @@ document.addEventListener('touchcancel', (e) => {
   }
 });
 
-console.log('listeners attached');
+log('listeners attached');
 
 const volume = document.getElementById('volume'), volumeBtn = document.getElementById('volume-btn');
 const timer = document.getElementById('timer'), waveformCanvas = document.getElementById('waveform');
@@ -149,11 +227,11 @@ async function initAudio() {
 
   activeAudio.addEventListener('timeupdate', onTimeUpdate);
   activeAudio.addEventListener('ended', handleTrackEnd);
-  nextAudio.addEventListener('ended', handleTrackEnd);
+  // nextAudio.addEventListener('ended', handleTrackEnd);//
 
   setupEQSliders();
-  console.log('WebAudio 10-Band ready');
-  console.log('AudioContext state:', audioCtx.state);
+  log('WebAudio 10-Band ready');
+  log('AudioContext state:', audioCtx.state);
   drawSpectrum();
 }
 
@@ -177,6 +255,18 @@ function setupEQSliders(){
     document.querySelectorAll('.eq-value').forEach(v => v.textContent = '0');
     if(eqPresetDrawer) eqPresetDrawer.value = 'flat';
   });
+}
+
+function updateTimer() {
+  if (!activeAudio.duration || isNaN(activeAudio.duration)) return;
+  timer.textContent = `${fmt(activeAudio.currentTime)} / ${fmt(activeAudio.duration)}`;
+}
+
+function fmt(sec) {
+  if (isNaN(sec)) return '0:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 function onTimeUpdate() {
@@ -205,27 +295,42 @@ eqPresetDrawer.addEventListener('change', e => applyPreset(e.target.value));
 
 // ===== Crossfade + Repeat Logic =====
 function checkCrossfade() {
-  if (crossfadeMs === 0 || isCrossfading ||!activeAudio.duration || songs.length < 2) return;
-  if (repeatMode === 2) return; // repeat one
-  const timeLeft = activeAudio.duration - activeAudio.currentTime;
-  const fadeSec = Math.min(crossfadeMs / 1000, activeAudio.duration * 0.3); 
-  // Start exactly at fadeSec, not with buffer. Buffer causes early triggers
-  if (timeLeft <= fadeSec &&!isCrossfading) startCrossfade();
+  if (!isFinite(audio.duration) || songs.length < 2) return;
+
+  const timeLeft = audio.duration - audio.currentTime;
+  const crossfadeSec = crossfadeMs / 1000; // <- CONVERT MS TO SECONDS
+
+  log('checkCrossfade:', timeLeft.toFixed(2), 's left, isCrossfading:', isCrossfading, 'lock:', crossfadeLock);
+
+  // Use crossfadeSec, not crossfadeTime
+  if (timeLeft <= crossfadeSec &&!isCrossfading && crossfadeLock === -1) {
+    crossfadeLock = (currentIdx + 1) % songs.length;
+    isCrossfading = true;
+    log('Crossfade triggered. Target:', songs[crossfadeLock].title, 'idx:', crossfadeLock);
+    log('LOCK SET. currentIdx:', currentIdx, '-> crossfadeLock:', crossfadeLock, songs[crossfadeLock].title);
+    startCrossfade();
+  }
 }
 // FIX 2: Ensure art loads during crossfade
 async function startCrossfade() {
-  let next = getNextIndex();
-  if (next === -1) {
+  // USE THE LOCK from checkCrossfade, don't recalculate
+  let next = crossfadeLock;
+  if (next === -1 || next === currentIdx) {
     isCrossfading = false;
+    crossfadeLock = -1;
     return;
   }
 
-  isCrossfading = true;
+  // isCrossfading already set true in checkCrossfade
   activeAudio.removeEventListener('timeupdate', onTimeUpdate);
 
   if (!nextAudio.src || nextAudio.dataset.songIdx!= next) {
     const nextSong = songs[next];
-    if (!nextSong) { isCrossfading = false; return; }
+    if (!nextSong) {
+      isCrossfading = false;
+      crossfadeLock = -1;
+      return;
+    }
     nextAudio.src = URL.createObjectURL(nextSong.blob);
     nextAudio.dataset.songIdx = next;
     nextAudio.load();
@@ -244,8 +349,9 @@ async function startCrossfade() {
     }
     await nextAudio.play();
   } catch (e) {
-    console.log('Crossfade aborted - next track play failed:', e);
+    log('Crossfade aborted - next track play failed:', e);
     isCrossfading = false;
+    crossfadeLock = -1; // <- UNLOCK ON FAIL
     activeAudio.addEventListener('timeupdate', onTimeUpdate);
     return;
   }
@@ -254,47 +360,54 @@ async function startCrossfade() {
   const fadeTime = crossfadeMs / 1000;
   const targetVol = parseFloat(volume.value) || 1;
 
-  // CANCEL + EQUAL-POWER CURVES
   activeGain.gain.cancelScheduledValues(now);
   nextGain.gain.cancelScheduledValues(now);
 
-  // FIX 1: Exponential fade-out sounds natural
   activeGain.gain.setValueAtTime(activeGain.gain.value || targetVol, now);
-  activeGain.gain.exponentialRampToValueAtTime(0.001, now + fadeTime); // 0.001 not 0
+  activeGain.gain.exponentialRampToValueAtTime(0.001, now + fadeTime);
 
-  // FIX 2: Fade to user's volume, not 1
-  nextGain.gain.setValueAtTime(0.001, now); // Start from 0.001 not 0
+  nextGain.gain.setValueAtTime(0.001, now);
   nextGain.gain.exponentialRampToValueAtTime(targetVol, now + fadeTime);
 
-  const doSwap = async () => {
-    try {
-      activeAudio.pause();
-      // FIX 3: Set final value explicitly so there's no pop
-      activeGain.gain.setValueAtTime(0, audioCtx.currentTime);
-      nextGain.gain.setValueAtTime(targetVol, audioCtx.currentTime);
+ const doSwap = async () => {
+  log('doSwap START. currentIdx:', currentIdx, 'crossfadeLock:', crossfadeLock);
+  try {
+    activeAudio.pause();
+    activeGain.gain.setValueAtTime(0, audioCtx.currentTime);
+    nextGain.gain.setValueAtTime(targetVol, audioCtx.currentTime);
 
-      [activeAudio, nextAudio] = [nextAudio, activeAudio];
-      [activeGain, nextGain] = [nextGain, activeGain];
+    // REMOVE listeners from old activeAudio before swap
+    activeAudio.removeEventListener('timeupdate', onTimeUpdate);
+    activeAudio.removeEventListener('ended', handleTrackEnd); // <- ADD THIS
 
-      activeAudio.addEventListener('timeupdate', onTimeUpdate);
-      currentIdx = next;
-      await setAlbumArt(songs[currentIdx].blob);
-      updateUI(songs[currentIdx]);
-      updateMediaSession(songs[currentIdx]);
-      renderPlaylist();
-      preloadNextSong();
-    } catch (e) {
-      console.log('Crossfade swap failed:', e);
-    } finally {
-      isCrossfading = false;
-    }
-  };
+    [activeAudio, nextAudio] = [nextAudio, activeAudio];
+    [activeGain, nextGain] = [nextGain, activeGain];
+
+    // ADD listeners to new activeAudio after swap
+    activeAudio.addEventListener('timeupdate', onTimeUpdate);
+    activeAudio.addEventListener('ended', handleTrackEnd); // <- ADD THIS
+
+    currentIdx = crossfadeLock;
+    log('doSwap SET currentIdx to:', currentIdx, songs[currentIdx].title);
+    crossfadeLock = -1;
+
+    await setAlbumArt(songs[currentIdx].blob);
+    updateUI(songs[currentIdx]);
+    updateMediaSession(songs[currentIdx]);
+    renderPlaylist();
+    preloadNextSong();
+
+  } catch (e) {
+    console.log('Crossfade swap failed:', e);
+  } finally {
+    isCrossfading = false;
+  }
+};
 
   const crossfadeTimeout = setTimeout(doSwap, crossfadeMs);
 
   const forceSwap = () => {
     clearTimeout(crossfadeTimeout);
-    // Cancel ramps before forced swap to prevent pops
     activeGain.gain.cancelScheduledValues(audioCtx.currentTime);
     nextGain.gain.cancelScheduledValues(audioCtx.currentTime);
     doSwap();
@@ -354,15 +467,15 @@ function getPrevIndex() {
 }
 
 async function handleTrackEnd() {
-  if (isHandlingEnded) return;
-
-  // If crossfading, the crossfade will handle it. But if we're here,
-  // crossfade likely failed. Reset and continue.
-  if (isCrossfading) {
-    console.log('Ended fired during crossfade - forcing reset');
-    isCrossfading = false;
+  log('handleTrackEnd FIRED. isHandlingEnded:', isHandlingEnded, 'isCrossfading:', isCrossfading, 'lock:', crossfadeLock);
+  
+  // CRITICAL: If crossfading or locked, GTFO immediately. Do not touch anything.
+  if (isCrossfading || crossfadeLock!== -1) {
+    log('BLOCKED: Crossfade active, ignoring ended event');
+    return; // <- STOPS HERE. No reset, no getNextIndex, nothing.
   }
-
+  
+  if (isHandlingEnded) return;
   isHandlingEnded = true;
 
   if (repeatMode === 2) {
@@ -391,6 +504,7 @@ async function handleTrackEnd() {
 async function loadSong(idx, shouldPlay = true) {
   currentIdx = idx;
   const song = songs[idx];
+  log('Song data:', song); // ADD THIS - check console
   if (!song) return;
 
   await initAudio();
@@ -442,6 +556,22 @@ async function loadSong(idx, shouldPlay = true) {
       playBtn.textContent = '▶️';
     }
   }
+}
+
+
+function updateUI(song) {
+  const titleEl = document.getElementById('now-title');
+  const artistEl = document.getElementById('now-artist');
+  const albumEl = document.getElementById('now-album');
+  const artEl = document.getElementById('album-art'); // THIS IS THE FIX
+  
+  if (titleEl) titleEl.textContent = song.title || 'Unknown Track';
+  if (artistEl) artistEl.textContent = song.artist || 'Unknown Artist';
+  if (albumEl) {
+    albumEl.textContent = song.album || '';
+    albumEl.style.display = song.album ? 'block' : 'none';
+  }
+  if (artEl) artEl.src = song.artUrl || './assets/default-art.svg';
 }
 
 function preloadNextSong() {
@@ -614,14 +744,20 @@ eqBtn.onclick = () => eqDrawer.classList.toggle('open');
 eqClose.onclick = () => eqDrawer.classList.remove('open');
 
 // ===== UI + Files =====
-function updateUI(song) {
-  nowTitle.textContent = song.title;
-  nowArtist.textContent = song.artist;
-}
+
 async function setAlbumArt(file) {
-  albumArt.src = DEFAULT_ART;
   const song = songs[currentIdx];
-  if (!file ||!song) return;
+  if (!song) return;
+
+  // Always show something immediately
+  albumArt.src = song.artUrl || DEFAULT_ART;
+  if (!file) return;
+
+  // If we already have real art cached, don't re-parse
+  if (song.artUrl && song.artUrl!== DEFAULT_ART) {
+    albumArt.src = song.artUrl;
+    return;
+  }
 
   return new Promise((resolve) => {
     jsmediatags.read(file, {
@@ -629,16 +765,42 @@ async function setAlbumArt(file) {
         if (tag.tags.picture) {
           try {
             const newBlob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
-            song.artUrl = URL.createObjectURL(newBlob); // Just overwrite, don't revoke old
+
+            if (song.artUrl && song.artUrl.startsWith('blob:')) {
+              URL.revokeObjectURL(song.artUrl);
+            }
+            song.artUrl = URL.createObjectURL(newBlob);
             albumArt.src = song.artUrl;
+
+            // UPDATE THE PLAYLIST ROW TOO - this is key
+            const el = document.querySelector(`#song-list li[data-id="${song.id}"]`);
+            if (el) {
+              el.querySelector('img').src = song.artUrl;
+              log('Updated playlist art for:', song.title);
+            }
           } catch (e) {
             console.warn('Art extraction failed:', e);
-            song.artUrl = DEFAULT_ART;
           }
         }
+
+        // Also update text if jsmediatags found better metadata
+        if (tag.tags.title) song.title = tag.tags.title;
+        if (tag.tags.artist) song.artist = tag.tags.artist;
+        if (tag.tags.album) song.album = tag.tags.album;
+
+        const el = document.querySelector(`#song-list li[data-id="${song.id}"]`);
+        if (el) {
+          el.querySelector('.song-title').textContent = song.title;
+          el.querySelector('.song-artist').textContent = song.artist;
+          el.querySelector('.song-album').textContent = song.album;
+        }
+
         resolve();
       },
-      onError: () => resolve()
+      onError: (e) => {
+        console.error('setAlbumArt failed for', song.title, e);
+        resolve();
+      }
     });
   });
 }
@@ -653,6 +815,7 @@ function renderPlaylist() {
       <div class="song-meta">
         <div class="song-title">${s.title}</div>
         <div class="song-artist">${s.artist}</div>
+        ${s.album? `<div class="song-album">${s.album}</div>` : ''}
       </div>
       <button class="del-song" data-idx="${realIdx}">×</button>
     </li>`;
@@ -660,26 +823,93 @@ function renderPlaylist() {
 }
 
 songList.onclick = e => {
+  // Delete button
   if (e.target.classList.contains('del-song')) {
     e.stopPropagation();
-    const idx = parseInt(e.target.dataset.idx);
+    const li = e.target.closest('li'); // <- changed from .song-item
+    const id = li.dataset.id;
+    const idx = songs.findIndex(s => s.id === id);
+    
+    if (idx === -1) return;
+    
     songs.splice(idx, 1);
+    
     if (currentIdx === idx) {
       activeAudio.pause();
+      activeAudio.currentTime = 0;
       currentIdx = -1;
+      resetPlayer();
     } else if (currentIdx > idx) {
       currentIdx--;
     }
+    
     if (isShuffling) generateShuffleOrder();
     renderPlaylist();
     return;
   }
-  const li = e.target.closest('li');
-  if (li) loadSong(parseInt(li.dataset.idx));
+  
+  // Click to play
+  const li = e.target.closest('li'); // <- changed from .song-item
+  if (li) {
+    const idx = parseInt(li.dataset.idx); // <- use data-idx now
+    if (!isNaN(idx)) loadSong(idx);
+  }
 };
 
+function readTagsAndArt(file) {
+  return new Promise((resolve) => {
+  log('Reading tags for:', file.name);
+    jsmediatags.read(file, {
+      onSuccess: function(tag) {
+        const tags = tag.tags;
+        log('SUCCESS for', file.name, 'Title:', tags.title, 'Artist:', tags.artist, 'Has picture:',!!tags.picture);
+
+        let artUrl = DEFAULT_ART;
+        if (tags.picture) {
+          try {
+            const { data, format } = tags.picture;
+            const byteArray = new Uint8Array(data);
+            const blob = new Blob([byteArray], { type: format });
+            artUrl = URL.createObjectURL(blob);
+            log('Art extracted for', file.name, 'Size:', data.length);
+          } catch (e) {
+            console.error('Art extraction CRASHED for', file.name, e);
+          }
+        }
+
+        resolve({
+          title: tags.title || file.name.replace(/\.[^/.]+$/, ""),
+          artist: tags.artist || 'Unknown Artist',
+          album: tags.album || '',
+          artUrl: artUrl
+        });
+      },
+      onError: function(error) {
+        console.error('TAG READ FAILED for', file.name, 'Error:', error.type, error.info);
+        resolve({
+          title: file.name.replace(/\.[^/.]+$/, ""),
+          artist: 'Unknown Artist',
+          album: '',
+          artUrl: DEFAULT_ART
+        });
+      }
+    });
+  });
+}
+
 async function handleFiles(fileList) {
-  const files = Array.from(fileList).filter(f => f.type.startsWith('audio/'));
+  const files = Array.from(fileList).filter(f => {
+    const hasAudioType = f.type.startsWith('audio/');
+    const hasAudioExt = /\.(mp3|m4a|aac|ogg|wav|flac|opus|wma)$/i.test(f.name);
+    return hasAudioType || hasAudioExt;
+  });
+
+  log(`Processing ${files.length} audio files out of ${fileList.length} total`);
+
+  const songListEl = document.querySelector('#song-list');
+  if (!songListEl) return console.error('song-list element not found');
+  songListEl.innerHTML = '';
+  songs.length = 0;
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -689,73 +919,66 @@ async function handleFiles(fileList) {
       id,
       title: file.name.replace(/\.[^/.]+$/, ""),
       artist: 'Loading...',
+      album: 'Loading...',
       blob: file,
       artUrl: DEFAULT_ART
     };
 
-    try {
-      const meta = await readTagsAndArt(file); // Read FIRST
-      song.title = meta.title;
-      song.artist = meta.artist;
-      song.artUrl = meta.artUrl; // No revokes in readTagsAndArt
-    } catch (err) {
-      console.warn('Tag read failed for', file.name, err);
-    }
+    songs.push(song);
 
-    songs.push(song); // Push AFTER we have the final artUrl
-    renderPlaylist(); // Render ONCE per song, with correct blob
+    const li = document.createElement('li');
+    li.dataset.idx = i;
+    li.dataset.id = song.id;
+    li.innerHTML = `
+      <img src="${song.artUrl}">
+      <div class="song-meta">
+        <div class="song-title">${song.title}</div>
+        <div class="song-artist">${song.artist}</div>
+        <div class="song-album">${song.album}</div>
+      </div>
+      <button class="del-song">×</button>
+    `;
+    songListEl.appendChild(li);
+
     if (currentIdx === -1 && songs.length === 1) loadSong(0, false);
+
+    // ASYNC TAG LOAD - updates DOM when ready
+    readTagsAndArt(file).then(meta => {
+  song.title = meta.title;
+  song.artist = meta.artist;
+  song.album = meta.album;
+
+  if (meta.artUrl!== DEFAULT_ART) {
+    if (song.artUrl && song.artUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(song.artUrl);
+    }
+    song.artUrl = meta.artUrl;
+  }
+
+  // USE data-idx NOT data-id - idx is set synchronously when you create the li
+  const el = songListEl.querySelector(`li[data-idx="${i}"]`); // <- i from the for loop
+  if (el) {
+    el.querySelector('img').src = song.artUrl;
+    el.querySelector('.song-title').textContent = song.title;
+    el.querySelector('.song-artist').textContent = song.artist;
+    el.querySelector('.song-album').textContent = song.album;
+    log('Updated playlist row for:', song.title); // <- add this to confirm
+  } else {
+    console.error('Could not find li[data-idx="' + i + '"] for', song.title);
+  }
+}).catch(err => {
+  console.warn('Tag read failed for', file.name, err);
+});
 
     await new Promise(r => setTimeout(r, 0));
   }
 
   if (isShuffling) generateShuffleOrder();
+  log(`Done. Final playlist: ${songs.length} songs`);
 }
 
-addSongsBtn.onclick = () => fileInput.click();
 addFolderBtn.onclick = () => folderInput.click();
-fileInput.onchange = e => handleFiles(e.target.files);
-folderInput.onchange = e => handleFiles(e.target.files);
 
-async function readTagsAndArt(file) {
-  return new Promise((resolve) => {
-    jsmediatags.read(file, {
-      onSuccess: tag => {
-        const result = {
-          title: tag.tags.title || file.name.replace(/\.[^/.]+$/, ""),
-          artist: tag.tags.artist || 'Unknown Artist',
-          artUrl: DEFAULT_ART
-        };
-
-        if (tag.tags.picture) {
-          try {
-            const blob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
-            result.artUrl = URL.createObjectURL(blob); // NO REVOKE HERE
-          } catch (e) {
-            console.warn('Art extraction failed:', e);
-          }
-        }
-        resolve(result);
-      },
-      onError: () => resolve({
-        title: file.name.replace(/\.[^/.]+$/, ""),
-        artist: 'Unknown Artist',
-        artUrl: DEFAULT_ART
-      })
-    });
-  });
-}
-
-function updateTimer() {
-  if (!activeAudio.duration) return;
-  timer.textContent = `${fmt(activeAudio.currentTime)} / ${fmt(activeAudio.duration)}`;
-}
-
-function fmt(sec) {
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
 
 // ===== Waveform =====
 async function drawWaveform(file) {
