@@ -8,10 +8,17 @@ const error = (...args) => console.error(...args); // Always show errors
 
 console.log('Crossfade Player v2.2.8 - EQ Fix + AbortError + Crossfade Art');
 
+// === Canvas + Spectrum Globals === 
+const canvas = document.getElementById('spectrum'); // match your canvas id
+const ctx = canvas.getContext('2d');
+const barCount = 128; // or however many bars you want
+
 let songs = [], currentIdx = -1;
 let repeatMode = 0; // 0=off, 1=all, 2=one
 let isShuffling = false, shuffleOrder = [], shufflePosition = 0;
 let audioCtx = null, analyser = null, eqChain = [], activeGain, nextGain, isCrossfading = false;
+let spectrumRunning = false; // Keep only this one
+let dataArray; // ADD THIS
 let crossfadeMs = 5000, lastVolume = 1, waveformData = [];
 let isHandlingEnded = false;
 let currentSwipeTarget = null;
@@ -51,30 +58,31 @@ const playerContainer = document.querySelector('.album-art-container'); // Chang
 
 fileInput.addEventListener('change', async (e) => {
   const rawFiles = Array.from(e.target.files);
-  log('RAW FILES:', rawFiles.map(f => ({name: f.name, type: f.type})));
-  
-  // Check extension, not MIME type
   const files = rawFiles.filter(f => /\.(mp3|m4a|flac|ogg|wav|aac)$/i.test(f.name));
-  log('FILTERED FILES:', files.length);
-  
+
   if (!files.length) {
-    console.log('No audio files after filter');
     e.target.value = '';
     return;
   }
-  
+
   for (const file of files) {
     const songData = await new Promise(resolve => {
       new jsmediatags.Reader(file).read({
         onSuccess: (tag) => {
-          log('TAGS:', tag.tags.title, tag.tags.artist, tag.tags.album);
+          let artUrl = './assets/default-art.svg';
+          if (tag.tags.picture) {
+            try {
+              const newBlob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
+              artUrl = URL.createObjectURL(newBlob);
+            } catch (e) {}
+          }
           resolve({
             id: crypto.randomUUID(),
             title: tag.tags.title || file.name.replace(/\.[^/.]+$/, ""),
             artist: tag.tags.artist || 'Unknown Artist',
             album: tag.tags.album || '',
             blob: file,
-            artUrl: './assets/default-art.svg'
+            artUrl: artUrl
           });
         },
         onError: () => resolve({
@@ -89,10 +97,10 @@ fileInput.addEventListener('change', async (e) => {
     });
     songs.push(songData);
   }
-  
+
   renderPlaylist();
   e.target.value = '';
-  
+
   if (isShuffling) generateShuffleOrder();
   if (currentIdx === -1 && songs.length > 0) loadSong(0, false);
 });
@@ -192,7 +200,7 @@ async function initAudio() {
     return filter;
   });
 
-  // FIXED: Actually chain the EQ filters
+  // Actually chain the EQ filters
   eqChain.reduce((prev, curr) => {
     prev.connect(curr);
     return curr;
@@ -208,7 +216,7 @@ async function initAudio() {
   // EQ end -> preGain
   eqChain[eqChain.length - 1].connect(preGain);
 
-  // CRITICAL FIX: Create a mix bus for analyser to tap
+  // Create a mix bus for analyser to tap
   const mixBus = audioCtx.createGain();
   mixBus.gain.value = 1;
 
@@ -219,20 +227,24 @@ async function initAudio() {
   nextGain.connect(mixBus);
   mixBus.connect(audioCtx.destination);
 
-  // FIXED: Analyser taps the final mix, not preGain
+  // Analyser taps the final mix
   analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 256;
-  analyser.smoothingTimeConstant = 0.8;
-  mixBus.connect(analyser); // Now it hears the actual crossfaded output
+  analyser.fftSize = 2048; // CHANGED: was 256, need 2048 for 128 bars
+  analyser.smoothingTimeConstant = 0.7; // CHANGED: was 0.8
+  mixBus.connect(analyser);
+
+  // ADD THIS LINE RIGHT HERE
+  dataArray = new Uint8Array(analyser.frequencyBinCount);
 
   activeAudio.addEventListener('timeupdate', onTimeUpdate);
   activeAudio.addEventListener('ended', handleTrackEnd);
-  // nextAudio.addEventListener('ended', handleTrackEnd);//
 
   setupEQSliders();
   log('WebAudio 10-Band ready');
   log('AudioContext state:', audioCtx.state);
-  drawSpectrum();
+
+  // REMOVE this line from here - we'll call it after play starts
+  // drawSpectrum();
 }
 
 function setupEQSliders(){
@@ -242,7 +254,7 @@ function setupEQSliders(){
     slider.addEventListener('input', e => {
       const band = parseInt(e.target.dataset.band);
       const val = parseFloat(e.target.value);
-      if(!eqChain[band]) return;
+      if(!eqChain || !eqChain[band]) return;
       eqChain[band].gain.value = val;
       valSpan.textContent = val > 0? `+${val}` : val;
       if(eqPresetDrawer) eqPresetDrawer.value = 'custom';
@@ -273,6 +285,13 @@ function onTimeUpdate() {
   renderWaveform();
   updateTimer();
   checkCrossfade();
+  // Add this debug line at the bottom
+  if (activeAudio.duration && activeAudio.currentTime) {
+    const timeLeft = activeAudio.duration - activeAudio.currentTime;
+    if (timeLeft < 6) {
+      log('Approaching crossfade:', timeLeft.toFixed(2), 's left, crossfading:', isCrossfading);
+    }
+  }
 }
 
 function applyPreset(name) {
@@ -295,25 +314,28 @@ eqPresetDrawer.addEventListener('change', e => applyPreset(e.target.value));
 
 // ===== Crossfade + Repeat Logic =====
 function checkCrossfade() {
-  if (!isFinite(audio.duration) || songs.length < 2) return;
+  if (!isFinite(activeAudio.duration) || songs.length < 2 || crossfadeMs === 0) return;
 
-  const timeLeft = audio.duration - audio.currentTime;
-  const crossfadeSec = crossfadeMs / 1000; // <- CONVERT MS TO SECONDS
+  const timeLeft = activeAudio.duration - activeAudio.currentTime;
+  const crossfadeSec = crossfadeMs / 1000;
 
-  log('checkCrossfade:', timeLeft.toFixed(2), 's left, isCrossfading:', isCrossfading, 'lock:', crossfadeLock);
+  // This log was missing in your output - add it
+  if (timeLeft <= crossfadeSec + 0.5) {
+    log('checkCrossfade:', timeLeft.toFixed(2), 's left, isCrossfading:', isCrossfading, 'lock:', crossfadeLock);
+  }
 
-  // Use crossfadeSec, not crossfadeTime
   if (timeLeft <= crossfadeSec &&!isCrossfading && crossfadeLock === -1) {
-    crossfadeLock = (currentIdx + 1) % songs.length;
+    let next = getNextIndex(); // Don't use currentIdx + 1, that ignores shuffle/repeat
+    if (next === -1 || next === currentIdx) return;
+
+    crossfadeLock = next;
     isCrossfading = true;
-    log('Crossfade triggered. Target:', songs[crossfadeLock].title, 'idx:', crossfadeLock);
-    log('LOCK SET. currentIdx:', currentIdx, '-> crossfadeLock:', crossfadeLock, songs[crossfadeLock].title);
+    log('Crossfade triggered:', songs[currentIdx].title, '->', songs[next].title);
     startCrossfade();
   }
 }
-// FIX 2: Ensure art loads during crossfade
+
 async function startCrossfade() {
-  // USE THE LOCK from checkCrossfade, don't recalculate
   let next = crossfadeLock;
   if (next === -1 || next === currentIdx) {
     isCrossfading = false;
@@ -321,8 +343,7 @@ async function startCrossfade() {
     return;
   }
 
-  // isCrossfading already set true in checkCrossfade
-  activeAudio.removeEventListener('timeupdate', onTimeUpdate);
+  // Don't remove timeupdate here - doSwap handles it
 
   if (!nextAudio.src || nextAudio.dataset.songIdx!= next) {
     const nextSong = songs[next];
@@ -344,15 +365,14 @@ async function startCrossfade() {
       await new Promise((resolve, reject) => {
         nextAudio.addEventListener('canplay', resolve, { once: true });
         nextAudio.addEventListener('error', reject, { once: true });
-        setTimeout(reject, 1000);
+        setTimeout(() => reject('timeout'), 2000);
       });
     }
     await nextAudio.play();
   } catch (e) {
-    log('Crossfade aborted - next track play failed:', e);
+    log('Crossfade aborted:', e);
     isCrossfading = false;
-    crossfadeLock = -1; // <- UNLOCK ON FAIL
-    activeAudio.addEventListener('timeupdate', onTimeUpdate);
+    crossfadeLock = -1;
     return;
   }
 
@@ -369,40 +389,37 @@ async function startCrossfade() {
   nextGain.gain.setValueAtTime(0.001, now);
   nextGain.gain.exponentialRampToValueAtTime(targetVol, now + fadeTime);
 
- const doSwap = async () => {
-  log('doSwap START. currentIdx:', currentIdx, 'crossfadeLock:', crossfadeLock);
-  try {
-    activeAudio.pause();
-    activeGain.gain.setValueAtTime(0, audioCtx.currentTime);
-    nextGain.gain.setValueAtTime(targetVol, audioCtx.currentTime);
+  const doSwap = async () => {
+    log('doSwap START. currentIdx:', currentIdx, '->', crossfadeLock);
+    try {
+      activeAudio.pause();
+      activeGain.gain.setValueAtTime(0, audioCtx.currentTime);
+      nextGain.gain.setValueAtTime(targetVol, audioCtx.currentTime);
 
-    // REMOVE listeners from old activeAudio before swap
-    activeAudio.removeEventListener('timeupdate', onTimeUpdate);
-    activeAudio.removeEventListener('ended', handleTrackEnd); // <- ADD THIS
+      activeAudio.removeEventListener('timeupdate', onTimeUpdate);
+      activeAudio.removeEventListener('ended', handleTrackEnd);
 
-    [activeAudio, nextAudio] = [nextAudio, activeAudio];
-    [activeGain, nextGain] = [nextGain, activeGain];
+      [activeAudio, nextAudio] = [nextAudio, activeAudio];
+      [activeGain, nextGain] = [nextGain, activeGain];
 
-    // ADD listeners to new activeAudio after swap
-    activeAudio.addEventListener('timeupdate', onTimeUpdate);
-    activeAudio.addEventListener('ended', handleTrackEnd); // <- ADD THIS
+      activeAudio.addEventListener('timeupdate', onTimeUpdate);
+      activeAudio.addEventListener('ended', handleTrackEnd);
 
-    currentIdx = crossfadeLock;
-    log('doSwap SET currentIdx to:', currentIdx, songs[currentIdx].title);
-    crossfadeLock = -1;
+      currentIdx = crossfadeLock;
+      crossfadeLock = -1;
 
-    await setAlbumArt(songs[currentIdx].blob);
-    updateUI(songs[currentIdx]);
-    updateMediaSession(songs[currentIdx]);
-    renderPlaylist();
-    preloadNextSong();
+      await setAlbumArt(songs[currentIdx].blob);
+      updateUI(songs[currentIdx]);
+      updateMediaSession(songs[currentIdx]);
+      renderPlaylist();
+      preloadNextSong();
 
-  } catch (e) {
-    console.log('Crossfade swap failed:', e);
-  } finally {
-    isCrossfading = false;
-  }
-};
+    } catch (e) {
+      console.log('Crossfade swap failed:', e);
+    } finally {
+      isCrossfading = false;
+    }
+  };
 
   const crossfadeTimeout = setTimeout(doSwap, crossfadeMs);
 
@@ -612,6 +629,12 @@ function setupMediaSessionHandlers() {
   if ('mediaSession' in navigator) {
     navigator.mediaSession.setActionHandler('play', async () => {
       await initAudio();
+      
+      // CHANGED: audioCtx not audioContext
+      if (audioCtx && audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+      
       if (currentIdx === -1 && songs.length > 0) {
         await loadSong(0, true);
       } else {
@@ -620,17 +643,22 @@ function setupMediaSessionHandlers() {
           isPlaying = true;
           playBtn.textContent = '⏸️';
           updateMediaSessionState();
+          
+          // CHANGED: use guard
+          safeStartSpectrum();
+          
         } catch (e) {
           if (e.name!== 'AbortError') console.log('MediaSession play failed:', e);
         }
       }
     });
-
+    
     navigator.mediaSession.setActionHandler('pause', () => {
       activeAudio.pause();
       isPlaying = false;
       playBtn.textContent = '▶️';
       updateMediaSessionState();
+      // optional: set spectrumRunning = false; if you want it to stop drawing on pause
     });
 
     navigator.mediaSession.setActionHandler('previoustrack', () => prevSong());
@@ -644,21 +672,41 @@ function setupMediaSessionHandlers() {
 // ===== Controls =====
 let isPlaying = false;
 
-playBtn.addEventListener('click', async () => {
-  await initAudio();
-  if (songs.length === 0) return;
-  if (currentIdx === -1) {
-    await loadSong(0, true);
+
+function safeStartSpectrum() {
+  if (!spectrumRunning && analyser) {
+    spectrumRunning = true;
+    drawSpectrum();
+  }
+}
+
+async function togglePlay() {
+  if (!songs.length) return;
+
+  if (!audioCtx) await initAudio();
+
+  if (!activeAudio.src || activeAudio.src === window.location.href || activeAudio.src === '' || currentIdx === -1) {
+    await loadSong(currentIdx === -1 ? 0 : currentIdx, true);
     return;
   }
+
   if (activeAudio.paused) {
     try {
+      // FIX 1: Resume FIRST, before play
+      if (audioCtx && audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+      
       await activeAudio.play();
       isPlaying = true;
       playBtn.textContent = '⏸️';
       updateMediaSessionState();
+      
+      // FIX 2: Start spectrum AFTER audio is playing
+      safeStartSpectrum();
+      
     } catch (e) {
-      if (e.name!== 'AbortError') console.log('Play failed:', e);
+      if (e.name !== 'AbortError') console.log('Play failed:', e);
     }
   } else {
     activeAudio.pause();
@@ -666,7 +714,9 @@ playBtn.addEventListener('click', async () => {
     playBtn.textContent = '▶️';
     updateMediaSessionState();
   }
-});
+}
+
+playBtn.addEventListener('click', togglePlay);
 
 function nextSong() {
   const next = getNextIndex();
@@ -754,10 +804,10 @@ async function setAlbumArt(file) {
   if (!file) return;
 
   // If we already have real art cached, don't re-parse
-  if (song.artUrl && song.artUrl!== DEFAULT_ART) {
-    albumArt.src = song.artUrl;
-    return;
-  }
+  // if (song.artUrl && song.artUrl!== DEFAULT_ART) {
+   // albumArt.src = song.artUrl;
+   // return;
+  //} 
 
   return new Promise((resolve) => {
     jsmediatags.read(file, {
@@ -806,18 +856,17 @@ async function setAlbumArt(file) {
 }
 
 function renderPlaylist() {
-  
   const list = searchInput && searchInput.value? songs.filter(s => s.title.toLowerCase().includes(searchInput.value.toLowerCase())) : songs;
   songList.innerHTML = list.map((s) => {
     const realIdx = songs.indexOf(s);
-    return `<li data-idx="${realIdx}" class="${realIdx === currentIdx? 'active' : ''}">
+    return `<li data-song-id="${s.id}" data-idx="${realIdx}" class="${realIdx === currentIdx? 'active' : ''}">
       <img class="song-thumb" src="${s.artUrl}">
       <div class="song-meta">
         <div class="song-title">${s.title}</div>
         <div class="song-artist">${s.artist}</div>
         ${s.album? `<div class="song-album">${s.album}</div>` : ''}
       </div>
-      <button class="del-song" data-idx="${realIdx}">×</button>
+      <button class="del-song" data-song-id="${s.id}">×</button>
     </li>`;
   }).join('');
 }
@@ -826,14 +875,14 @@ songList.onclick = e => {
   // Delete button
   if (e.target.classList.contains('del-song')) {
     e.stopPropagation();
-    const li = e.target.closest('li'); // <- changed from .song-item
-    const id = li.dataset.id;
-    const idx = songs.findIndex(s => s.id === id);
-    
+    const songId = e.target.dataset.songId;
+    const idx = songs.findIndex(s => s.id === songId);
+
     if (idx === -1) return;
-    
+
+    if (songs[idx].artUrl?.startsWith('blob:')) URL.revokeObjectURL(songs[idx].artUrl);
     songs.splice(idx, 1);
-    
+
     if (currentIdx === idx) {
       activeAudio.pause();
       activeAudio.currentTime = 0;
@@ -842,16 +891,16 @@ songList.onclick = e => {
     } else if (currentIdx > idx) {
       currentIdx--;
     }
-    
+
     if (isShuffling) generateShuffleOrder();
     renderPlaylist();
     return;
   }
-  
+
   // Click to play
-  const li = e.target.closest('li'); // <- changed from .song-item
+  const li = e.target.closest('li');
   if (li) {
-    const idx = parseInt(li.dataset.idx); // <- use data-idx now
+    const idx = parseInt(li.dataset.idx);
     if (!isNaN(idx)) loadSong(idx);
   }
 };
@@ -1028,97 +1077,63 @@ waveformCanvas.addEventListener('click', e => {
 
 // ===== Spectrum =====
 function drawSpectrum() {
-  const canvas = document.getElementById('spectrum');
-  if (!canvas ||!analyser) return;
-  const ctx = canvas.getContext('2d');
-  const data = new Uint8Array(analyser.frequencyBinCount);
+  if (!analyser ||!dataArray ||!ctx) return;
 
-  const barCount = 24;
-  const peaks = new Array(barCount).fill(0);
-  const peakHoldTime = new Array(barCount).fill(0);
+  requestAnimationFrame(drawSpectrum);
 
-  function loop() {
-    requestAnimationFrame(loop);
-    analyser.getByteFrequencyData(data);
+  analyser.getByteFrequencyData(dataArray);
 
-    // ADD IT RIGHT HERE - after getting data, before drawing
-  const energy = data.reduce((a, b) => a + b, 0) / data.length;
-  const normalized = energy / 255;
-  ctx.globalAlpha = 0.3 + normalized * 0.7; // fades when quiet, pops when loud
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Read actual CSS size - works for 68x80 or 80x100
-    const w = canvas.offsetWidth;
-    const h = canvas.offsetHeight;
-    canvas.width = w;
-    canvas.height = h;
-    ctx.clearRect(0, 0, w, h);
+  const barWidth = canvas.width / barCount;
 
-    const grad = ctx.createLinearGradient(0, 0, w, 0);
-    grad.addColorStop(0, '#b30000');
-    grad.addColorStop(0.25, '#b33d00');
-    grad.addColorStop(0.45, '#b3b300');
-    grad.addColorStop(0.6, '#66b300');
-    grad.addColorStop(0.75, '#00b300');
-    grad.addColorStop(1, '#00b366');
+  // HORIZONTAL RASTA GRADIENT: left to right - BRIGHT VERSION
+  const gradient = ctx.createLinearGradient(0, 0, canvas.width, 0);
 
-    for (let i = 0; i < barCount; i++) {
-      const bin = Math.floor((i / barCount) * data.length);
-      const val = data[bin] / 255;
-      const bh = val * h * 0.9;
+  gradient.addColorStop(0, 'rgba(255, 0, 0, 1)'); // pure red
+  gradient.addColorStop(0.15, 'rgba(255, 80, 80, 1)'); // hot red
+  gradient.addColorStop(0.35, 'rgba(255, 200, 0, 1)'); // bright orange-gold
+  gradient.addColorStop(0.5, 'rgba(255, 255, 50, 1)'); // electric yellow
+  gradient.addColorStop(0.65, 'rgba(180, 255, 50, 1)'); // lime yellow-green
+  gradient.addColorStop(0.8, 'rgba(50, 255, 50, 1)'); // neon green
+  gradient.addColorStop(1, 'rgba(0, 220, 0, 1)'); // bright green
 
-      const x = Math.floor((i / barCount) * w);
-      const nextX = Math.floor(((i + 1) / barCount) * w);
-      const barWidth = nextX - x;
-      const y = h - bh;
+  ctx.fillStyle = gradient;
+  ctx.shadowBlur = 12; // keep the glow size
 
-      let glowColor = '#b30000';
-      if (i > barCount * 0.25) glowColor = '#b3b300';
-      if (i > barCount * 0.45) glowColor = '#66b300';
-      if (i > barCount * 0.6) glowColor = '#00b300';
+  for (let i = 0; i < barCount; i++) {
+    const barHeight = (dataArray[i] / 255) * canvas.height * 0.95;
+    const x = i * barWidth;
+    const y = canvas.height - barHeight;
 
-      // Bar
-      ctx.shadowBlur = 2;
-      ctx.shadowColor = glowColor;
-      ctx.fillStyle = grad;
-      ctx.globalAlpha = 0.85;
-      ctx.fillRect(x, y, barWidth, bh);
-      ctx.globalAlpha = 1;
+    // Position of this bar as 0 to 1 across the canvas
+    const position = i / barCount;
 
-      // Cap
-      ctx.shadowBlur = 3;
-      ctx.shadowColor = 'rgba(255, 255, 255, 0.5)';
-      ctx.fillStyle = 'rgba(200, 200, 200, 0.7)';
-      ctx.fillRect(x, y, barWidth, 1);
-
-      if (bh > peaks[i]) {
-        peaks[i] = bh;
-        peakHoldTime[i] = Date.now();
-      } else {
-        if (Date.now() - peakHoldTime[i] > 600) {
-          peaks[i] *= 0.9;
-        }
-      }
-
-      // Peak hold - FIXED: kill shadow before drawing
-      if (peaks[i] > 1) {
-        const peakY = h - peaks[i];
-
-        // Reset shadow so peaks don't look out of sync/bleedy
-        ctx.shadowBlur = 0;
-        ctx.shadowColor = 'transparent';
-
-        ctx.fillStyle = 'rgba(200, 200, 200, 0.8)';
-        ctx.fillRect(x, peakY - 1, barWidth, 1.5);
-
-        // Restore shadow for next bar if needed
-        // Actually not needed - loop sets it again at top
-      }
-    }
-    ctx.shadowBlur = 0; // Final safety reset
+    // Match shadow color to the gradient zone
+  // 40% Red | 30% Yellow | 30% Green
+  if (position < 0.4) {
+    // Red zone: 0% to 40%
+    ctx.shadowColor = 'rgba(255, 50, 50, 0.9)';
+  } else if (position < 0.7) {
+    // Yellow zone: 40% to 70%
+    ctx.shadowColor = 'rgba(255, 255, 50, 0.9)';
+  } else {
+    // Green zone: 70% to 100%
+    ctx.shadowColor = 'rgba(50, 255, 50, 0.9)';
   }
-  loop();
+
+    ctx.fillRect(x, y, barWidth - 2, barHeight);
+  }
 }
 
+function resetPlayer() {
+  nowTitle.textContent = 'No Song';
+  nowArtist.textContent = 'Unknown Artist';
+  albumArt.src = DEFAULT_ART;
+  timer.textContent = '0:00 / 0:00';
+  const ctx = waveformCanvas.getContext('2d');
+  ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+}
 function handleTouchStart(e) {
   touchStartX = e.changedTouches[0].screenX;
   lastTouchX = touchStartX;
