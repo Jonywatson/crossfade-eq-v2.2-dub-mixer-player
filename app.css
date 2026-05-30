@@ -161,7 +161,8 @@ will-change: transform;}
 
 /* Optional: make delete button red */
 .folder-actions #delete-stuck { 
-  color: #f0cecc; /* iOS-style red */
+  color: #1b1a1a; /* iOS-style red */
+  background: #f6807a;
   filter: drop-shadow(0 0 6px rgba(255, 59, 48, 0.8))
           drop-shadow(0 0 12px rgba(255, 59, 48, 0.5));
   transform: translateZ(0);

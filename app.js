@@ -24,9 +24,12 @@ let isHandlingEnded = false;
 let currentSwipeTarget = null;
 let crossfadeLock = -1; // -1 = idle, else = idx we're actively fading to
 
+
 const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const audio = document.getElementById('audio');
 const audioNext = document.getElementById('audio-next');
+let wakeLock = null;
+let mediaSessionReady = false;
 let activeAudio = audio, nextAudio = audioNext;
 //const shuffleBtn = document.getElementById('shuffle');
 let isShuffle = false;
@@ -236,16 +239,129 @@ async function initAudio() {
   // ADD THIS LINE RIGHT HERE
   dataArray = new Uint8Array(analyser.frequencyBinCount);
 
+  async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator && document.visibilityState === 'visible') {
+      wakeLock = await navigator.wakeLock.request('screen');
+      console.log('🔋 Screen wake lock active');
+      
+      wakeLock.addEventListener('release', () => {
+        console.log('🔋 Wake lock released');
+        if (!activeAudio.paused) requestWakeLock();
+      });
+    }
+  } catch (err) {
+    console.log(`Wake lock failed: ${err.name}`);
+  }
+}
+
+async function releaseWakeLock() {
+  if (wakeLock) {
+    await wakeLock.release();
+    wakeLock = null;
+  }
+}
+
+function setupWakeLockEvents(track) {
+  track.addEventListener('play', async () => {
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    await requestWakeLock();
+    setupMediaSession();
+    updateMediaSessionState('playing');
+  });
+  
+  track.addEventListener('pause', async () => {
+    // Only release if BOTH tracks are paused
+    if (activeAudio.paused && nextAudio.paused) {
+      await releaseWakeLock();
+      updateMediaSessionState('paused');
+    }
+  });
+}
+
+setupWakeLockEvents(activeAudio);
+setupWakeLockEvents(nextAudio);
+
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  
+  const trackName = activeAudio.dataset.title || 'Rasta Spectrum';
+  const artistName = activeAudio.dataset.artist || 'Live';
+  
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: trackName,
+      artist: artistName,
+      artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }]
+    });
+    
+    // iOS requires these handlers
+    navigator.mediaSession.setActionHandler('play', () => activeAudio.play());
+    navigator.mediaSession.setActionHandler('pause', () => activeAudio.pause());
+    
+    mediaSessionReady = true;
+  } catch (err) {
+    console.log('Media Session failed:', err);
+  }
+}
+
+function updateMediaSessionState(state) {
+  if ('mediaSession' in navigator && mediaSessionReady) {
+    navigator.mediaSession.playbackState = state;
+  }
+}
+
+// Re-acquire wake lock when user unlocks phone
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && !activeAudio.paused) {
+    await requestWakeLock();
+  }
+});
+
+// === HOOK INTO YOUR AUDIO ELEMENT ===
+activeAudio.addEventListener('play', async () => {
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume();
+  }
+  
+  await requestWakeLock();
+  setupMediaSession();
+  updateMediaSessionState('playing');
+});
+
+activeAudio.addEventListener('pause', async () => {
+  // FIX: only release if BOTH tracks paused during crossfade
+  if (activeAudio.paused && nextAudio.paused) {
+    await releaseWakeLock();
+    updateMediaSessionState('paused');
+  }
+});
+
+activeAudio.addEventListener('ended', async () => {
+  setTimeout(async () => {
+    if (activeAudio.paused && activeAudio.currentTime >= activeAudio.duration - 0.5) {
+      await releaseWakeLock();
+      updateMediaSessionState('paused');
+    }
+  }, 200);
+});
+
   activeAudio.addEventListener('timeupdate', onTimeUpdate);
   activeAudio.addEventListener('ended', handleTrackEnd);
 
   setupEQSliders();
   log('WebAudio 10-Band ready');
   log('AudioContext state:', audioCtx.state);
-
-  // REMOVE this line from here - we'll call it after play starts
-  // drawSpectrum();
 }
+
+nextAudio.addEventListener('play', async () => {
+  await requestWakeLock();
+});
+nextAudio.addEventListener('pause', async () => {
+  if (activeAudio.paused && nextAudio.paused) {
+    await releaseWakeLock();
+  }
+});
 
 function setupEQSliders(){
   document.querySelectorAll('.eq-band').forEach((bandEl, i) => {
