@@ -23,6 +23,7 @@ let crossfadeMs = 5000, lastVolume = 1, waveformData = [];
 let isHandlingEnded = false;
 let currentSwipeTarget = null;
 let crossfadeLock = -1; // -1 = idle, else = idx we're actively fading to
+let vuCanvas, vuCtx, vuAnimationId;
 
 
 const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
@@ -44,6 +45,78 @@ const folderInput = document.getElementById('folder-input');
 const addSongsBtn = document.getElementById('add-songs-btn'); // THIS IS YOUR BUTTON
 const addFolderBtn = document.getElementById('add-folder-btn');
 log('fileInput found:')
+
+
+  async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator && document.visibilityState === 'visible') {
+      wakeLock = await navigator.wakeLock.request('screen');
+      console.log('🔋 Screen wake lock active');
+      
+      wakeLock.addEventListener('release', () => {
+        console.log('🔋 Wake lock released');
+        if (!activeAudio.paused) requestWakeLock();
+      });
+    }
+  } catch (err) {
+    console.log(`Wake lock failed: ${err.name}`);
+  }
+}
+
+async function releaseWakeLock() {
+  if (wakeLock) {
+    await wakeLock.release();
+    wakeLock = null;
+  }
+}
+
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  
+  const trackName = activeAudio.dataset.title || 'Rasta Spectrum';
+  const artistName = activeAudio.dataset.artist || 'Live';
+  
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: trackName,
+      artist: artistName,
+      artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }]
+    });
+    
+    // iOS requires these handlers
+    navigator.mediaSession.setActionHandler('play', () => activeAudio.play());
+    navigator.mediaSession.setActionHandler('pause', () => activeAudio.pause());
+    
+    mediaSessionReady = true;
+  } catch (err) {
+    console.log('Media Session failed:', err);
+  }
+}
+
+
+
+// Call it when track loads:
+
+
+function setupWakeLockEvents(track) {
+  track.addEventListener('play', async () => {
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    await requestWakeLock();
+    setupMediaSession();
+    updateMediaSessionState('playing');
+  });
+  
+  track.addEventListener('pause', async () => {
+    // Only release if BOTH tracks are paused
+    if (activeAudio.paused && nextAudio.paused) {
+      await releaseWakeLock();
+      updateMediaSessionState('paused');
+    }
+  });
+}
+
+setupWakeLockEvents(activeAudio);
+setupWakeLockEvents(nextAudio);
 
 let clickCount = 0;
 addSongsBtn.addEventListener('click', () => {
@@ -154,7 +227,7 @@ const timer = document.getElementById('timer'), waveformCanvas = document.getEle
 const fadeSlider = document.getElementById('fade-slider'), fadeTimeLabel = document.getElementById('fade-time');
 
 
-const DEFAULT_ART = './assets/default-art.svg';
+const DEFAULT_ART = 'assets/default-art.svg';
 crossfadeMs = parseInt(fadeSlider.value);
 
 // FIX 1: Correct EQ preset length
@@ -239,77 +312,9 @@ async function initAudio() {
   // ADD THIS LINE RIGHT HERE
   dataArray = new Uint8Array(analyser.frequencyBinCount);
 
-  async function requestWakeLock() {
-  try {
-    if ('wakeLock' in navigator && document.visibilityState === 'visible') {
-      wakeLock = await navigator.wakeLock.request('screen');
-      console.log('🔋 Screen wake lock active');
-      
-      wakeLock.addEventListener('release', () => {
-        console.log('🔋 Wake lock released');
-        if (!activeAudio.paused) requestWakeLock();
-      });
-    }
-  } catch (err) {
-    console.log(`Wake lock failed: ${err.name}`);
-  }
-}
 
-async function releaseWakeLock() {
-  if (wakeLock) {
-    await wakeLock.release();
-    wakeLock = null;
-  }
-}
 
-function setupWakeLockEvents(track) {
-  track.addEventListener('play', async () => {
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
-    await requestWakeLock();
-    setupMediaSession();
-    updateMediaSessionState('playing');
-  });
-  
-  track.addEventListener('pause', async () => {
-    // Only release if BOTH tracks are paused
-    if (activeAudio.paused && nextAudio.paused) {
-      await releaseWakeLock();
-      updateMediaSessionState('paused');
-    }
-  });
-}
 
-setupWakeLockEvents(activeAudio);
-setupWakeLockEvents(nextAudio);
-
-function setupMediaSession() {
-  if (!('mediaSession' in navigator)) return;
-  
-  const trackName = activeAudio.dataset.title || 'Rasta Spectrum';
-  const artistName = activeAudio.dataset.artist || 'Live';
-  
-  try {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: trackName,
-      artist: artistName,
-      artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }]
-    });
-    
-    // iOS requires these handlers
-    navigator.mediaSession.setActionHandler('play', () => activeAudio.play());
-    navigator.mediaSession.setActionHandler('pause', () => activeAudio.pause());
-    
-    mediaSessionReady = true;
-  } catch (err) {
-    console.log('Media Session failed:', err);
-  }
-}
-
-function updateMediaSessionState(state) {
-  if ('mediaSession' in navigator && mediaSessionReady) {
-    navigator.mediaSession.playbackState = state;
-  }
-}
 
 // Re-acquire wake lock when user unlocks phone
 document.addEventListener('visibilitychange', async () => {
@@ -352,7 +357,61 @@ activeAudio.addEventListener('ended', async () => {
   setupEQSliders();
   log('WebAudio 10-Band ready');
   log('AudioContext state:', audioCtx.state);
+
+  initVU(); // 👈 ADD THIS - call it at the very end
 }
+
+// 1. Define animateVU first
+// 2. DPR setup function - DEFINE THIS FIRST
+function setupCanvasDPR() {
+  if (!vuCanvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = vuCanvas.getBoundingClientRect();
+
+  vuCanvas.width = rect.width * dpr;
+  vuCanvas.height = rect.height * dpr;
+  vuCtx.scale(dpr, dpr);
+}
+
+// 3. Animation function - DEFINE THIS SECOND
+function animateVU() {
+  vuAnimationId = requestAnimationFrame(animateVU);
+  analyser.getByteFrequencyData(dataArray);
+
+  const width = vuCanvas.clientWidth;
+  const height = vuCanvas.clientHeight;
+  vuCtx.clearRect(0, 0, width, height);
+
+  const barCount = 128;
+  const barWidth = width / barCount;
+
+  for (let i = 0; i < barCount; i++) {
+    const barHeight = (dataArray[i] / 255) * height;
+    const x = i * barWidth;
+    vuCtx.fillStyle = i > barCount * 0.9? '#ff0044' : i > barCount * 0.7? '#ffaa00' : '#00ff88';
+    vuCtx.fillRect(x, height - barHeight, barWidth - 1, barHeight);
+  }
+}
+
+// 4. Init function - DEFINE THIS THIRD
+function initVU() {
+  vuCanvas = document.getElementById('vu-meter');
+  if (!vuCanvas) return;
+
+  vuCtx = vuCanvas.getContext('2d');
+  setupCanvasDPR(); // now this exists
+  animateVU(); // and this exists too
+}
+
+// 5. Resize listener
+window.addEventListener('resize', () => {
+  if (vuCanvas) setupCanvasDPR();
+});
+
+// Handle phone rotation / resize
+window.addEventListener('resize', () => {
+  if (vuCanvas) setupCanvasDPR();
+});
 
 nextAudio.addEventListener('play', async () => {
   await requestWakeLock();
@@ -493,49 +552,81 @@ async function startCrossfade() {
   }
 
   const now = audioCtx.currentTime;
-  const fadeTime = crossfadeMs / 1000;
-  const targetVol = parseFloat(volume.value) || 1;
+const fadeTime = crossfadeMs / 1000;
+const targetVol = parseFloat(volume.value) || 1;
+const samples = 100;
+const curveA = new Float32Array(samples);
+const curveB = new Float32Array(samples);
 
-  activeGain.gain.cancelScheduledValues(now);
-  nextGain.gain.cancelScheduledValues(now);
+// Build equal-power curves
+for (let i = 0; i < samples; i++) {
+  const progress = i / (samples - 1);
+  curveA[i] = Math.cos(progress * Math.PI / 2) * targetVol; // fades out
+  curveB[i] = Math.sin(progress * Math.PI / 2) * targetVol; // fades in
+}
 
-  activeGain.gain.setValueAtTime(activeGain.gain.value || targetVol, now);
-  activeGain.gain.exponentialRampToValueAtTime(0.001, now + fadeTime);
+activeGain.gain.cancelScheduledValues(now);
+nextGain.gain.cancelScheduledValues(now);
 
-  nextGain.gain.setValueAtTime(0.001, now);
-  nextGain.gain.exponentialRampToValueAtTime(targetVol, now + fadeTime);
+activeGain.gain.setValueAtTime(activeGain.gain.value || targetVol, now);
+nextGain.gain.setValueAtTime(0.001, now);
 
-  const doSwap = async () => {
-    log('doSwap START. currentIdx:', currentIdx, '->', crossfadeLock);
-    try {
-      activeAudio.pause();
-      activeGain.gain.setValueAtTime(0, audioCtx.currentTime);
-      nextGain.gain.setValueAtTime(targetVol, audioCtx.currentTime);
+activeGain.gain.setValueCurveAtTime(curveA, now, fadeTime);
+nextGain.gain.setValueCurveAtTime(curveB, now, fadeTime);
+const doSwap = async () => {
+  log('doSwap START. currentIdx:', currentIdx, '->', crossfadeLock);
 
-      activeAudio.removeEventListener('timeupdate', onTimeUpdate);
-      activeAudio.removeEventListener('ended', handleTrackEnd);
-
-      [activeAudio, nextAudio] = [nextAudio, activeAudio];
-      [activeGain, nextGain] = [nextGain, activeGain];
-
-      activeAudio.addEventListener('timeupdate', onTimeUpdate);
-      activeAudio.addEventListener('ended', handleTrackEnd);
-
-      currentIdx = crossfadeLock;
-      crossfadeLock = -1;
-
-      await setAlbumArt(songs[currentIdx].blob);
-      updateUI(songs[currentIdx]);
-      updateMediaSession(songs[currentIdx]);
-      renderPlaylist();
-      preloadNextSong();
-
-    } catch (e) {
-      console.log('Crossfade swap failed:', e);
-    } finally {
+  try {
+    // Guard 1: Validate next index exists
+    if (crossfadeLock < 0 || crossfadeLock >= songs.length) {
+      console.warn('doSwap aborted: invalid crossfadeLock', crossfadeLock);
       isCrossfading = false;
+      return;
     }
-  };
+
+    const nextTrack = songs[crossfadeLock];
+    if (!nextTrack) {
+      console.warn('doSwap aborted: nextTrack undefined');
+      isCrossfading = false;
+      return;
+    }
+
+    activeAudio.pause();
+    activeGain.gain.setValueAtTime(0, audioCtx.currentTime);
+    nextGain.gain.setValueAtTime(targetVol, audioCtx.currentTime);
+
+    activeAudio.removeEventListener('timeupdate', onTimeUpdate);
+    activeAudio.removeEventListener('ended', handleTrackEnd);
+
+    [activeAudio, nextAudio] = [nextAudio, activeAudio];
+    [activeGain, nextGain] = [nextGain, activeGain];
+
+    activeAudio.addEventListener('timeupdate', onTimeUpdate);
+    activeAudio.addEventListener('ended', handleTrackEnd);
+
+    currentIdx = crossfadeLock;
+    crossfadeLock = -1;
+
+    // Guard 2: Validate current track before art/UI
+    const currTrack = songs[currentIdx];
+    if (!currTrack) {
+      console.warn('doSwap: currTrack undefined, skipping art/UI');
+      isCrossfading = false;
+      return;
+    }
+
+    await setAlbumArt(currTrack.blob);
+    updateUI(currTrack);
+    updateMediaSession(currTrack);
+    renderPlaylist();
+    preloadNextSong();
+
+  } catch (e) {
+    console.log('Crossfade swap failed:', e);
+  } finally {
+    isCrossfading = false;
+  }
+};
 
   const crossfadeTimeout = setTimeout(doSwap, crossfadeMs);
 
@@ -637,62 +728,50 @@ async function handleTrackEnd() {
 async function loadSong(idx, shouldPlay = true) {
   currentIdx = idx;
   const song = songs[idx];
-  log('Song data:', song); // ADD THIS - check console
   if (!song) return;
 
   await initAudio();
   if (audioCtx.state === 'suspended') await audioCtx.resume();
 
-  // Ensure clean state before loading
-  if (!activeAudio.paused) {
-    activeAudio.pause();
-    await new Promise(r => setTimeout(r, 0));
-  }
-
-  if (activeGain) {
-    activeGain.gain.cancelScheduledValues(audioCtx.currentTime);
-    activeGain.gain.setValueAtTime(parseFloat(volume.value) || 1, audioCtx.currentTime);
-  }
-  if (nextGain) {
-    nextGain.gain.cancelScheduledValues(audioCtx.currentTime);
-    nextGain.gain.setValueAtTime(0, audioCtx.currentTime);
-  }
-
-  if (isShuffling) shufflePosition = shuffleOrder.indexOf(idx);
-
-  // DELETE THIS LINE: if (activeAudio.src) URL.revokeObjectURL(activeAudio.src);
-  activeAudio.src = URL.createObjectURL(song.blob); // KEEP THIS - just overwrite
+  activeAudio.src = URL.createObjectURL(song.blob);
   activeAudio.load();
 
-  await setAlbumArt(song.blob);
-  updateUI(song);
-  updateMediaSession(song);
-  renderPlaylist();
-  drawWaveform(song.blob).catch(() => {});
-  preloadNextSong();
-
-  if (shouldPlay) {
-    try {
-      // Wait for audio to be ready
-      if (activeAudio.readyState < 2) {
-        await new Promise(resolve => {
-          activeAudio.addEventListener('canplay', resolve, { once: true });
-        });
+  // 1. Extract art with jsmediatags HERE
+  await new Promise((resolve) => {
+    jsmediatags.read(song.blob, {
+      onSuccess: (tag) => {
+        const picture = tag.tags.picture;
+        if (picture) {
+          // Convert byte array → blob → objectURL
+          const byteArray = new Uint8Array(picture.data);
+          const artBlob = new Blob([byteArray], { type: picture.format }); // "image/jpeg" or "image/png"
+          song.artUrl = URL.createObjectURL(artBlob); // <-- save it on song object
+          song.artType = picture.format; // save type too
+        }
+        resolve();
+      },
+      onError: () => {
+        song.artUrl = null; // no art found
+        resolve();
       }
-      await activeAudio.play();
-      isPlaying = true;
-      playBtn.textContent = '⏸️';
-      updateMediaSessionState();
-    } catch (e) {
-      if (e.name!== 'AbortError') console.log('Play failed:', e);
-      isPlaying = false;
-      playBtn.textContent = '▶️';
-    }
-  }
+    });
+  });
+
+  await setAlbumArt(song.blob); // your existing UI art
+  await drawWaveform(song.blob); 
+  updateUI(song);
+  updateMediaSession(song); // now song.artUrl exists
+  renderPlaylist();
 }
 
 
 function updateUI(song) {
+  // Guard: exit early if song is undefined/null
+  if (!song) {
+    console.warn('updateUI skipped: song is undefined');
+    return;
+  }
+
   const titleEl = document.getElementById('now-title');
   const artistEl = document.getElementById('now-artist');
   const albumEl = document.getElementById('now-album');
@@ -720,25 +799,26 @@ function preloadNextSong() {
   nextAudio.load();
 }
 
-// ===== Media Session API =====
-function updateMediaSession(song) {
-  if ('mediaSession' in navigator) {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: song.title || 'Unknown',
-      artist: song.artist || 'Unknown',
-      album: 'PWA Music Player',
-      artwork: [
-        { src: song.artUrl || DEFAULT_ART, sizes: '512x512', type: 'image/png' }
-      ]
-    });
-    navigator.mediaSession.playbackState = activeAudio.paused? 'paused' : 'playing';
-  }
-}
+function updateMediaSession(song, state) {
+  if (!('mediaSession' in navigator)) return;
 
-function updateMediaSessionState() {
-  if ('mediaSession' in navigator) {
-    navigator.mediaSession.playbackState = activeAudio.paused? 'paused' : 'playing';
-  }
+  const artUrl = song.artUrl && !song.artUrl.endsWith('.svg') 
+    ? song.artUrl 
+    : DEFAULT_ART;
+    
+  const artType = song.artType || 'image/png';
+
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: song.title || 'Unknown',
+    artist: song.artist || 'Unknown',
+    album: song.album || 'PWA Music Player',
+    artwork: [
+      { src: artUrl, sizes: '512x512', type: artType },
+      { src: artUrl, sizes: '600x600', type: artType }
+    ]
+  });
+  
+  navigator.mediaSession.playbackState = state || (activeAudio.paused ? 'paused' : 'playing');
 }
 
 function setupMediaSessionHandlers() {
@@ -875,6 +955,14 @@ shuffleBtn.onclick = () => {
   shuffleBtn.classList.toggle('active', isShuffling);
   if (isShuffling) generateShuffleOrder();
 };
+
+
+function updateMediaSessionState() {
+  if (!('mediaSession' in navigator)) return;
+  
+  navigator.mediaSession.playbackState = activeAudio.paused? 'paused' : 'playing';
+}
+
 
 function generateShuffleOrder() {
   shuffleOrder = [...Array(songs.length).keys()];
@@ -1174,6 +1262,7 @@ function renderWaveform() {
   const w = waveformCanvas.width;
   const h = waveformCanvas.height;
   ctx.clearRect(0, 0, w, h);
+  log('waveformData length:', waveformData.length, 'duration:', activeAudio.duration)
   ctx.fillStyle = '#2a2a2a';
   ctx.fillRect(0, 0, w, h);
   const progress = activeAudio.duration? activeAudio.currentTime / activeAudio.duration : 0;

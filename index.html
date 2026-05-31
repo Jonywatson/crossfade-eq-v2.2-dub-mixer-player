@@ -7,6 +7,11 @@
   <meta name="description" content="True crossfade with 10-band EQ. Works on iPhone/Android/Desktop.">
   <meta name="theme-color" content="#121212">
   <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-512.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="app.css">
 </head>
@@ -69,11 +74,11 @@
       </div>
 
       <div class="vu-wrapper">
-        <canvas id="vu-meter"></canvas>
         <label>
           <input type="range" id="volume" min="0" max="1" step="0.01" value="1">
           <button id="volume-btn">🔊</button>
         </label>
+        <canvas id="vu-meter"></canvas>
       </div>
 
       <!-- EQ DRAWER -->
