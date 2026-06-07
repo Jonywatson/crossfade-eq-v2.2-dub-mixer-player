@@ -29,9 +29,9 @@ body {
   right: 0; 
   z-index: 100; 
   background: #121212; 
-  padding: 10px 12px;
-  height: 140px; /* explicit height so we can calc below */
+  padding: 1px 10px; explicit height so we can calc below */
   box-sizing: border-box; 
+  padding-bottom: 1px;
 }
 
 /* CHANGED: align-items flex-start so tall button stack aligns to top */
@@ -39,10 +39,8 @@ body {
   display: flex; 
   gap: 4px; 
   align-items: center; 
-  margin-bottom: 8px; 
+  margin-bottom: 0px; 
   border-right: 1px solid rgba(255,255,255,0.1);
-  min-height: 120px;
-  height: 120px; 
   position: relative;
   width: 100%;
   overflow: hidden;
@@ -185,22 +183,41 @@ will-change: transform;}
   overflow-y: auto; 
   -webkit-overflow-scrolling: touch; 
   padding: 0 12px; 
-  padding-top: 80px;
-  margin-top: 72px; 
+  padding-top: 60px;
+  margin-top: 1px; 
   margin-bottom: 180px;
   min-height: 0;
 }
 
 /* THE ACTUAL SCROLLING LIST */
+main {
+  height: auto !important;
+  min-height: calc(100vh - 220px) !important; /* header + footer + gap */
+  overflow: visible !important;
+  padding-top: 120px !important;    /* space for top header/artwork */
+  padding-bottom: 140px !important; /* space for Backup button + footer */
+}
+
+main .playlist {
+  overflow-y: auto !important;      /* only playlist scrolls */
+  -webkit-overflow-scrolling: touch;
+  max-height: none !important;      /* removed */
+  min-height: 0 !important;         /* removed */
+  padding-bottom: 0 !important;     /* padding moved to main */
+  box-sizing: border-box;
+}
 
 #song-list {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 0;
-  margin: 0;
+  margin: 0 !important;
+  margin-top: 0;
+  padding: 0 0 80px 0 !important; /* space for footer */
+  padding-bottom: 0 !important; /* we don't need extra now */
   list-style: none;
+  max-height: calc(100vh - 260px); /* <-- KEY: leave room for top art + bottom controls */
 }
 
 /* Each row - NO max-height, NO overflow here */
@@ -342,6 +359,42 @@ will-change: transform;}
   opacity: 1;                            /* ADD: play always full opacity */
 }
 
+/* Dark mode action buttons - matches player theme */
+.controls button.action-btn {
+  background: linear-gradient(180deg, #2a2a2a 0%, #1e1e1e 100%);
+  border: 1px solid #3a3a3a;
+  color: #e0e0e0;
+  font-size: 12px;
+  font-weight: 500;
+  width: auto;
+  height: 28px;
+  padding: 0 10px;
+  margin-left: 8px;
+  border-radius: 6px;
+  opacity: 0.9;
+  transition: all 0.15s ease;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+.controls button.action-btn:first-child {
+  margin-left: 0;
+}
+
+.controls button.action-btn:hover {
+  background: linear-gradient(180deg, #333 0%, #252525 100%);
+  border-color: #4a4a4a;
+  opacity: 1;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+
+.controls button.action-btn:active {
+  transform: translateY(0);
+  box-shadow: none;
+  background: #1a1a1a;
+}
+
 #shuffle.active, #repeat.active { 
   color: #1ed760;
   opacity: 1; 
@@ -381,7 +434,33 @@ will-change: transform;}
   align-items: center;
   justify-content: center;
 }
+/* Mini player mode */
+body.mini-player .playlist {
+  display: none;
+}
 
+body.mini-player .player {
+  height: auto;
+  padding: 12px;
+}
+
+body.mini-player .now-playing {
+  margin-bottom: 8px;
+}
+
+body.mini-player .controls {
+  gap: 4px;
+}
+
+body.mini-player .action-btn {
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+/* Rotate button when active */
+body.mini-player #miniBtn {
+  background: linear-gradient(135deg, #667eea, #764ba2);
+}
 .controls select { 
   background: #282828; 
   color: #fff; 
@@ -620,6 +699,36 @@ will-change: transform;}
 .some-overlay {
   position: absolute;
   z-index: 9999; /* Sitting on top of the img */
+}
+
+
+/* 1. Kill playlist default margin */
+.playlist {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+/* 2. Kill gap from canvas - canvases are inline by default */
+#spectrum {
+  display: block;
+  margin-bottom: 0;
+  vertical-align: bottom;
+}
+
+/* 3. Make header stick + remove its bottom padding */
+.top-fixed {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #111; /* use your exact bg color */
+  padding-bottom: 0;
+  padding-top: 12px;
+  margin-bottom: 0;
+}
+
+/* 4. Nuke first track margin just in case */
+.playlist .track:first-child {
+  margin-top: 0 !important;
 }
 
 /* Mobile bump - more visible on high-DPI */

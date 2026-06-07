@@ -2,7 +2,7 @@ const CACHE_NAME = 'xfade-player-v2.2';
 const APP_SHELL = [
   './',
   './index.html',
-  './app.css',
+  './style.css',
   './app.js',
   './manifest.json',
   './assets/default-art.svg',

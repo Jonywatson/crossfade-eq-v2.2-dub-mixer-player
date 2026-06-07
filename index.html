@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div class="app">
@@ -22,7 +22,7 @@
       <div class="top-row">
         <canvas id="spectrum" width="800" height="200"></canvas>
         <div class ="album-art-container">
-          <img id="album-art" src="./assets/default-art.svg" alt="" draggable="false" onerror="this.src='./assets/default-art.svg'">
+          <img id="album-art" src="assets/default-art.svg" alt="" draggable="false" onerror="this.src='assets/default-art.svg'">
         </div>
         <div class="now-meta">
           <div id="now-title">Track Name</div>
@@ -34,6 +34,7 @@
           <button id="add-folder-btn">+ Folder</button>
           <button id="delete-stuck">Delete All</button>
           <input type="text" id="search" placeholder="Search songs...">
+        </div>
         </div>
       </div>
     </header>
@@ -52,6 +53,7 @@
         <button id="next">⏭</button>
         <button id="shuffle">🔀</button>
         <button id="repeat">🔁</button>
+        <button id="miniBtn" class="action-btn" title="Mini player">⊟</button>
 
         <select id="eq-preset">
           <option value="flat">Flat</option>
@@ -63,7 +65,11 @@
           <option value="custom" disabled>Custom</option>
         </select>
         <button id="eq-btn">EQ</button>
-
+        <button id="backup-btn" class="action-btn">💾 Backup</button>
+        <button id="restore-btn" class="action-btn">📂 Restore</button>
+        <button id="matchBtn" class="action-btn">🎵 Match</button>
+        <input type="file" id="folder-input" webkitdirectory directory multiple hidden>
+        <input type="file" id="restore-input" accept=".json" style="display:none">
         <span class="fade-label">Fade: <span id="fade-time">2.0s</span></span>
         <input type="range" id="fade-slider" min="0" max="5000" step="100" value="2000">
       </div>

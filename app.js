@@ -1,3 +1,6 @@
+// Line 1 of app.js - capture from file input
+window.capturedTracks = [];
+
 // === DEBUG LOGGER ===
 const DEBUG = false; // Set to true when John Breaker needs to investigate
 const log = (...args) => DEBUG && console.log(...args);
@@ -8,33 +11,49 @@ const error = (...args) => console.error(...args); // Always show errors
 
 console.log('Crossfade Player v2.2.8 - EQ Fix + AbortError + Crossfade Art');
 
+// ===== 1. STATE + DOM =====
+
 // === Canvas + Spectrum Globals === 
 const canvas = document.getElementById('spectrum'); // match your canvas id
 const ctx = canvas.getContext('2d');
 const barCount = 128; // or however many bars you want
+const DEFAULT_ART = 'assets/default-art.svg';
 
+let audioFileInput = null;
 let songs = [], currentIdx = -1;
 let repeatMode = 0; // 0=off, 1=all, 2=one
 let isShuffling = false, shuffleOrder = [], shufflePosition = 0;
 let audioCtx = null, analyser = null, eqChain = [], activeGain, nextGain, isCrossfading = false;
-let spectrumRunning = false; // Keep only this one
+let spectrumRunning = false; 
+let animId = null;
 let dataArray; // ADD THIS
 let crossfadeMs = 5000, lastVolume = 1, waveformData = [];
 let isHandlingEnded = false;
 let currentSwipeTarget = null;
 let crossfadeLock = -1; // -1 = idle, else = idx we're actively fading to
 let vuCanvas, vuCtx, vuAnimationId;
-
-
-const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
-const audio = document.getElementById('audio');
-const audioNext = document.getElementById('audio-next');
 let wakeLock = null;
 let mediaSessionReady = false;
-let activeAudio = audio, nextAudio = audioNext;
-//const shuffleBtn = document.getElementById('shuffle');
+let activeAudio = null; 
+let audio = null; 
+let nextAudio = null; 
+let audioNext = null;
 let isShuffle = false;
+let clickCount = 0;
+let touchStartX = 0;
+let touchEndX = 0;
+let touchStartY = 0;
+let isSwiping = false;
+let touchStartTime = 0;
+let lastTouchX = 0;
+let velocity = 0;
+let audioContext, source, filters = [];
 
+
+const swipeThreshold = 50; 
+const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+const audioEl = document.getElementById('audio');
+const audioNextEl = document.getElementById('audio-next');
 const playBtn = document.getElementById('play'), prevBtn = document.getElementById('prev'), nextBtn = document.getElementById('next');
 const shuffleBtn = document.getElementById('shuffle'), repeatBtn = document.getElementById('repeat');
 const eqBtn = document.getElementById('eq-btn'), eqDrawer = document.getElementById('eq-drawer'), eqClose = document.getElementById('eq-close');
@@ -42,16 +61,52 @@ const eqPreset = document.getElementById('eq-preset'), eqPresetDrawer = document
 const eqReset = document.getElementById('eq-reset');
 const fileInput = document.getElementById('file-input');
 const folderInput = document.getElementById('folder-input');
+const backupBtn = document.getElementById('backup-btn');  // add this here
+const restoreBtn = document.getElementById('restore-btn'); // add this too for later
+const restoreInput = document.getElementById('restore-input'); // add this too for later
+const matchBtn = document.getElementById('matchBtn');
 const addSongsBtn = document.getElementById('add-songs-btn'); // THIS IS YOUR BUTTON
 const addFolderBtn = document.getElementById('add-folder-btn');
 log('fileInput found:')
+const volume = document.getElementById('volume'), volumeBtn = document.getElementById('volume-btn');
+const timer = document.getElementById('timer'), waveformCanvas = document.getElementById('waveform');
+const fadeSlider = document.getElementById('fade-slider'), fadeTimeLabel = document.getElementById('fade-time');
+const miniBtn = document.getElementById('miniBtn');
 
+crossfadeMs = parseInt(fadeSlider.value);
+
+
+const deleteStuckBtn = document.getElementById('delete-stuck');
+const songList = document.getElementById('song-list'), searchInput = document.getElementById('search');
+const nowTitle = document.getElementById('now-title'), nowArtist = document.getElementById('now-artist'); 
+const albumArt = document.getElementById('album-art');
+const playerContainer = document.querySelector('.album-art-container');
+
+
+// FIX 1: Correct EQ preset length
+const EQ_PRESETS = {
+  flat: [0,0,0,0,0,0,0,0,0,0],
+  bass: [8,6,4,2,0,0,-1,-2,-2,-3],
+  rock: [5,4,2,-1,-2,-1,1,3,4,5],
+  pop: [-2,0,2,3,2,1,1,2,0,-1],
+  vocal: [-3,-2,0,2,4,5,4,2,0,-1],
+  electronic: [4,5,3,1,0,-1,1,3,5,6]
+};
+
+function showToast(msg) {
+  const toast = document.createElement('div');
+  toast.textContent = msg;
+  toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:8px 16px;border-radius:6px;z-index:9999;opacity:0;transition:0.3s';
+  document.body.appendChild(toast);
+  setTimeout(() => toast.style.opacity = 1, 10);
+  setTimeout(() => {toast.style.opacity = 0; setTimeout(() => toast.remove(), 300)}, 2000);
+}
 
   async function requestWakeLock() {
   try {
     if ('wakeLock' in navigator && document.visibilityState === 'visible') {
       wakeLock = await navigator.wakeLock.request('screen');
-      console.log('🔋 Screen wake lock active');
+      log('🔋 Screen wake lock active');
       
       wakeLock.addEventListener('release', () => {
         console.log('🔋 Wake lock released');
@@ -93,101 +148,236 @@ function setupMediaSession() {
   }
 }
 
-
-
-// Call it when track loads:
-
-
-function setupWakeLockEvents(track) {
-  track.addEventListener('play', async () => {
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
-    await requestWakeLock();
-    setupMediaSession();
-    updateMediaSessionState('playing');
-  });
-  
-  track.addEventListener('pause', async () => {
-    // Only release if BOTH tracks are paused
-    if (activeAudio.paused && nextAudio.paused) {
-      await releaseWakeLock();
-      updateMediaSessionState('paused');
-    }
-  });
-}
-
-setupWakeLockEvents(activeAudio);
-setupWakeLockEvents(nextAudio);
-
-let clickCount = 0;
 addSongsBtn.addEventListener('click', () => {
   clickCount++;
   log('Add Songs clicked #', clickCount);
   fileInput.click();
 });
-//const addSongsBtn = document.getElementById('add-songs-btn'), addFolderBtn = document.getElementById('add-folder-btn'); 
-const deleteStuckBtn = document.getElementById('delete-stuck');
-const songList = document.getElementById('song-list'), searchInput = document.getElementById('search');
-const nowTitle = document.getElementById('now-title'), nowArtist = document.getElementById('now-artist'); 
-const albumArt = document.getElementById('album-art');
-const playerContainer = document.querySelector('.album-art-container'); // Change this selector
 
 
 fileInput.addEventListener('change', async (e) => {
-  const rawFiles = Array.from(e.target.files);
-  const files = rawFiles.filter(f => /\.(mp3|m4a|flac|ogg|wav|aac)$/i.test(f.name));
-
+  const files = Array.from(e.target.files).filter(f => /\.(mp3|m4a|flac|ogg|wav|aac)$/i.test(f.name));
   if (!files.length) {
     e.target.value = '';
     return;
   }
 
-  for (const file of files) {
-    const songData = await new Promise(resolve => {
-      new jsmediatags.Reader(file).read({
-        onSuccess: (tag) => {
-          let artUrl = './assets/default-art.svg';
-          if (tag.tags.picture) {
-            try {
-              const newBlob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
-              artUrl = URL.createObjectURL(newBlob);
-            } catch (e) {}
-          }
-          resolve({
-            id: crypto.randomUUID(),
-            title: tag.tags.title || file.name.replace(/\.[^/.]+$/, ""),
-            artist: tag.tags.artist || 'Unknown Artist',
-            album: tag.tags.album || '',
-            blob: file,
-            artUrl: artUrl
-          });
-        },
-        onError: () => resolve({
-          id: crypto.randomUUID(),
-          title: file.name.replace(/\.[^/.]+$/, ""),
-          artist: 'Unknown Artist',
-          album: '',
-          blob: file,
-          artUrl: './assets/default-art.svg'
-        })
-      });
-    });
-    songs.push(songData);
-  }
+  // Revoke old blob URLs first
+  songs.forEach(s => {
+  if (s.src?.startsWith('blob:')) URL.revokeObjectURL(s.src);
+  if (s.artUrl?.startsWith('blob:') && s.artUrl !== DEFAULT_ART) URL.revokeObjectURL(s.artUrl);
+});
 
+  const newSongs = await Promise.all(files.map(async file => {
+    const meta = await readTags(file); // rename 'tags' to 'meta' to avoid confusion
+    
+    return {
+      id: crypto.randomUUID(),
+      title: meta.title || file.name.replace(/\.[^/.]+$/, ""), // ✅ use meta
+      artist: meta.artist || "Unknown", // ✅ use meta
+      album: meta.album || "", // ✅ use meta
+      src: URL.createObjectURL(file),
+      file: file,
+      artUrl: meta.artUrl
+    };
+  }));
+
+  songs.push(...newSongs);
+  currentIdx = -1; // reset so user must click
   renderPlaylist();
   e.target.value = '';
 
   if (isShuffling) generateShuffleOrder();
-  if (currentIdx === -1 && songs.length > 0) loadSong(0, false);
+  log(`Added ${newSongs.length} tracks`); // add this to confirm/ No loadSong here
 });
 
-folderInput.addEventListener('change', (e) => {
-  log('FOLDER RAW FILES:', e.target.files);
-  const files = [...e.target.files];
-  log('FILTERED FOLDER FILES:', files.length);
-  handleFiles(files); // use the same handler as fileInput
+folderInput.addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files).filter(f => /\.(mp3|m4a|flac|ogg|wav|aac)$/i.test(f.name));
+  if (!files.length) {
+    e.target.value = '';
+    return;
+  }
+
+  // Revoke old blob URLs first
+  songs.forEach(s => {
+    if (s.src?.startsWith('blob:')) URL.revokeObjectURL(s.src);
+    if (s.artUrl?.startsWith('blob:') && s.artUrl !== DEFAULT_ART) URL.revokeObjectURL(s.artUrl);
+  });
+
+  const newSongs = await Promise.all(files.map(async file => {
+    const meta = await readTags(file);
+    
+    return {
+      id: crypto.randomUUID(),
+      title: meta.title || file.name.replace(/\.[^/.]+$/, ""),
+      artist: meta.artist || "Unknown",
+      album: meta.album || "",
+      src: URL.createObjectURL(file),
+      file: file,
+      artUrl: meta.artUrl
+    };
+  }));
+
+  songs.push(...newSongs);
+  currentIdx = -1;
+  renderPlaylist();
+  e.target.value = '';
+
+  if (isShuffling) generateShuffleOrder();
+  log(`Added ${newSongs.length} tracks from folder`);
 });
 
+backupBtn.addEventListener('click', () => {
+  if (!songs.length) {
+    log('No tracks to backup');
+    return;
+  }
+
+  // Only save metadata, not blob URLs or File objects - they die on reload
+  const backupData = songs.map(s => ({
+    title: s.title,
+    artist: s.artist,
+    album: s.album,
+    artUrl: s.artUrl // only if it's not a blob URL
+  }));
+
+  const blob = new Blob([JSON.stringify(backupData, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `playlist-backup-${Date.now()}.json`;
+  a.click();
+  
+  URL.revokeObjectURL(url);
+  log(`Backup saved: ${songs.length} tracks`);
+});
+
+restoreBtn.addEventListener('click', () => {
+  restoreInput.click(); // open file picker
+});
+
+restoreInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const backupData = JSON.parse(text);
+
+    log(`Loading backup: ${backupData.length} tracks...`);
+
+    songs = [];
+    songList.innerHTML = '';
+
+    backupData.forEach((track) => {
+      songs.push({
+  id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+  title: track.title || 'Unknown Track',
+  artist: track.artist || 'Unknown',
+  album: track.album || '',
+  artUrl: track.artUrl && !track.artUrl.startsWith('blob:') ? track.artUrl : null, // <-- filter out blobs
+  file: null,
+  url: null
+});
+    });
+
+    renderPlaylist(); // now it has IDs
+
+    currentIdx = -1; // no track selected
+if (audio && !audio.paused) audio.pause(); // stop any phantom play
+log(`Restore complete: ${backupData.length} tracks loaded. Pick +songs/+folder to attach audio`);
+    restoreInput.value = '';
+
+  } catch (err) {
+    log('Restore failed: ' + err.message);
+    console.error(err);
+  }
+});
+
+matchBtn.addEventListener('click', () => folderInput.click());
+
+folderInput.addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files).filter(f => f.type.startsWith('audio/'));
+  if (!files.length) return;
+
+  log(`Scanning ${files.length} audio files...`);
+  let matched = 0;
+  const norm = str => str.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  for (let song of songs) {
+    if (song.file) continue;
+    const target = norm(song.title + song.artist);
+    const file = files.find(f => norm(f.name).includes(norm(song.title)) || norm(f.name).includes(target));
+
+    if (file) {
+      song.file = file;
+      song.url = URL.createObjectURL(file);
+      
+      try {
+        const arrayBuffer = await file.slice(0, 262144).arrayBuffer();
+        const tags = await readID3Tags(arrayBuffer);
+        if (tags.picture) {
+          const blob = new Blob([tags.picture.data], {type: tags.picture.format});
+          song.artUrl = URL.createObjectURL(blob);
+        }
+      } catch(err) {}
+
+      matched++;
+    }
+  }
+
+  renderPlaylist();
+  log(`Matched ${matched}/${songs.length} tracks. Art restored where found.`);
+  folderInput.value = '';
+});
+
+async function readID3Tags(buffer) {
+  const view = new DataView(buffer);
+  if (view.getUint32(0) !== 0x494433) return {};
+  let offset = 10;
+  while (offset < buffer.byteLength - 10) {
+    const frameId = String.fromCharCode(...new Uint8Array(buffer, offset, 4));
+    const size = view.getUint32(offset + 4);
+    if (frameId === 'APIC') {
+      const mime = 'image/jpeg';
+      const dataStart = offset + 21;
+      const data = new Uint8Array(buffer, dataStart, size - 21);
+      return { picture: { format: mime, data } };
+    }
+    offset += 10 + size;
+  }
+  return {};
+}
+// Helper: read tags once per file
+function readTags(file) {
+  return new Promise(resolve => {
+    new jsmediatags.Reader(file).read({
+      onSuccess: (tag) => {
+        let artUrl = DEFAULT_ART;
+        if (tag.tags.picture) {
+          try {
+            const blob = new Blob([new Uint8Array(tag.tags.picture.data)], {type: tag.tags.picture.format});
+            artUrl = URL.createObjectURL(blob);
+          } catch (e) {}
+        }
+        resolve({
+          title: tag.tags.title || file.name.replace(/\.[^/.]+$/, ""),
+          artist: tag.tags.artist || 'Unknown Artist',
+          album: tag.tags.album || '',
+          artUrl: artUrl
+          // DELETE blob: file  <- fileInput already sets .file
+        });
+      },
+      onError: () => resolve({
+        title: file.name.replace(/\.[^/.]+$/, ""),
+        artist: 'Unknown Artist',
+        album: '',
+        artUrl: DEFAULT_ART
+      })
+    });
+  });
+}
 
 document.addEventListener('touchstart', (e) => {
   const art = e.target.closest('#album-art,.song-thumb');
@@ -222,35 +412,25 @@ document.addEventListener('touchcancel', (e) => {
 
 log('listeners attached');
 
-const volume = document.getElementById('volume'), volumeBtn = document.getElementById('volume-btn');
-const timer = document.getElementById('timer'), waveformCanvas = document.getElementById('waveform');
-const fadeSlider = document.getElementById('fade-slider'), fadeTimeLabel = document.getElementById('fade-time');
+function safeStartSpectrum() {
+  if (spectrumRunning || !analyser || !dataArray) return;
+  spectrumRunning = true;
+  drawSpectrum();
+}
 
+function drawSpectrum() {
+  if (!spectrumRunning) return;
+  animId = requestAnimationFrame(drawSpectrum);
+  analyser.getByteFrequencyData(dataArray);
+}
 
-const DEFAULT_ART = 'assets/default-art.svg';
-crossfadeMs = parseInt(fadeSlider.value);
-
-// FIX 1: Correct EQ preset length
-const EQ_PRESETS = {
-  flat: [0,0,0,0,0,0,0,0,0,0],
-  bass: [8,6,4,2,0,0,-1,-2,-2,-3],
-  rock: [5,4,2,-1,-2,-1,1,3,4,5],
-  pop: [-2,0,2,3,2,1,1,2,0,-1],
-  vocal: [-3,-2,0,2,4,5,4,2,0,-1],
-  electronic: [4,5,3,1,0,-1,1,3,5,6]
-};
-
-// Add these right after your declarations, before functions
-let touchStartX = 0;
-let touchEndX = 0;
-let touchStartY = 0;
-let isSwiping = false;
-let touchStartTime = 0;
-let lastTouchX = 0;
-let velocity = 0;
-const swipeThreshold = 50; 
-
-let audioContext, source, filters = [];
+function stopSpectrum() {
+  spectrumRunning = false;
+  if (animId) {
+    cancelAnimationFrame(animId);
+    animId = null;
+  }
+}
 
 // ===== Audio Engine =====
 async function initAudio() {
@@ -258,10 +438,25 @@ async function initAudio() {
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   await audioCtx.resume();
 
+  // === ADD THIS FIRST ===
+  if (!audio) {
+    audio = new Audio();
+    audio.crossOrigin = 'anonymous';
+  }
+  if (!audioNext) {
+    audioNext = new Audio();
+    audioNext.crossOrigin = 'anonymous';
+  }
+
+  activeAudio = audio;
+  nextAudio = audioNext;
+  // === END ADD ===
+
+
   activeGain = audioCtx.createGain();
   nextGain = audioCtx.createGain();
   nextGain.gain.value = 0;
-  activeGain.gain.value = parseFloat(volume.value) || 1;
+  activeGain.gain.value = parseFloat(volume?.value) || 1;
 
   const preGain = audioCtx.createGain();
   preGain.gain.value = 0.707;
@@ -276,7 +471,6 @@ async function initAudio() {
     return filter;
   });
 
-  // Actually chain the EQ filters
   eqChain.reduce((prev, curr) => {
     prev.connect(curr);
     return curr;
@@ -285,80 +479,224 @@ async function initAudio() {
   const activeSource = audioCtx.createMediaElementSource(activeAudio);
   const nextSource = audioCtx.createMediaElementSource(nextAudio);
 
-  // Sources -> EQ start
   activeSource.connect(eqChain[0]);
   nextSource.connect(eqChain[0]);
-
-  // EQ end -> preGain
   eqChain[eqChain.length - 1].connect(preGain);
 
-  // Create a mix bus for analyser to tap
   const mixBus = audioCtx.createGain();
   mixBus.gain.value = 1;
-
-  // preGain -> crossfade gains -> mixBus -> destination
   preGain.connect(activeGain);
   preGain.connect(nextGain);
   activeGain.connect(mixBus);
   nextGain.connect(mixBus);
   mixBus.connect(audioCtx.destination);
 
-  // Analyser taps the final mix
   analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 2048; // CHANGED: was 256, need 2048 for 128 bars
-  analyser.smoothingTimeConstant = 0.7; // CHANGED: was 0.8
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0.7;
   mixBus.connect(analyser);
-
-  // ADD THIS LINE RIGHT HERE
   dataArray = new Uint8Array(analyser.frequencyBinCount);
 
+  // === ADD GUARD: only add listeners once ===
+  if (!activeAudio._listenersAdded) {
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState === 'visible' &&!activeAudio.paused) {
+        await requestWakeLock();
+      }
+    });
 
+    activeAudio.addEventListener('play', async () => {
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      await requestWakeLock();
+      setupMediaSession();
+      updateMediaSessionState('playing');
+    });
 
+    activeAudio.addEventListener('pause', async () => {
+      if (activeAudio.paused && nextAudio.paused) {
+        await releaseWakeLock();
+        updateMediaSessionState('paused');
+      }
+    });
 
+    activeAudio.addEventListener('ended', async () => {
+      setTimeout(async () => {
+        if (activeAudio.paused && activeAudio.currentTime >= activeAudio.duration - 0.5) {
+          await releaseWakeLock();
+          updateMediaSessionState('paused');
+        }
+      }, 200);
+    });
 
-// Re-acquire wake lock when user unlocks phone
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && !activeAudio.paused) {
-    await requestWakeLock();
-  }
-});
-
-// === HOOK INTO YOUR AUDIO ELEMENT ===
-activeAudio.addEventListener('play', async () => {
-  if (audioCtx.state === 'suspended') {
-    await audioCtx.resume();
-  }
-  
+    nextAudio.addEventListener('play', async () => {
+  if (audioCtx.state === 'suspended') await audioCtx.resume(); // ADD THIS
   await requestWakeLock();
-  setupMediaSession();
-  updateMediaSessionState('playing');
+  setupMediaSession(); // ADD THIS
+  updateMediaSessionState('playing'); // ADD THIS
 });
 
-activeAudio.addEventListener('pause', async () => {
-  // FIX: only release if BOTH tracks paused during crossfade
+nextAudio.addEventListener('pause', async () => {
   if (activeAudio.paused && nextAudio.paused) {
     await releaseWakeLock();
-    updateMediaSessionState('paused');
+    updateMediaSessionState('paused'); // ADD THIS
   }
 });
 
-activeAudio.addEventListener('ended', async () => {
+nextAudio.addEventListener('ended', async () => {
   setTimeout(async () => {
-    if (activeAudio.paused && activeAudio.currentTime >= activeAudio.duration - 0.5) {
+    if (activeAudio.paused && nextAudio.paused && nextAudio.currentTime >= nextAudio.duration - 0.5) {
       await releaseWakeLock();
       updateMediaSessionState('paused');
     }
   }, 200);
 });
 
-  activeAudio.addEventListener('timeupdate', onTimeUpdate);
-  activeAudio.addEventListener('ended', handleTrackEnd);
+    activeAudio.addEventListener('timeupdate', onTimeUpdate);
+    activeAudio.addEventListener('ended', handleTrackEnd);
+
+    activeAudio._listenersAdded = true;
+  }
 
   setupEQSliders();
   log('WebAudio 10-Band ready');
   log('AudioContext state:', audioCtx.state);
+  initVU();
+}
 
-  initVU(); // 👈 ADD THIS - call it at the very end
+function updateActiveTrack() {
+  const list = document.querySelector('#song-list');
+  if (!list) return; // playlist not in DOM yet
+
+  // Remove old highlight
+  list.querySelectorAll('li').forEach(item => item.classList.remove('active'));
+
+  // Add new highlight
+  const currentItem = list.querySelector(`li[data-idx="${currentIdx}"]`);
+  if (currentItem) {
+    currentItem.classList.add('active');
+    currentItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } else {
+    log('updateActiveTrack: li[data-idx="'+currentIdx+'"] not found yet');
+    // Retry 100ms later if DOM still building
+    setTimeout(updateActiveTrack, 100);
+  }
+}
+
+async function loadSong(idx, shouldPlay = true) {
+  // Guard: abort if this load is stale
+  const loadId = Symbol();
+  activeAudio._loadId = loadId;
+
+  currentIdx = idx;
+  updateActiveTrack();
+  const song = songs[idx];
+log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
+
+  if (!song?.src) {
+    showToast("Re-select files to restore audio");
+    console.error('No src on song:', song);
+    return;
+  }
+
+  // 1. Abort previous load immediately
+  activeAudio.pause();
+  activeAudio.removeAttribute('src');
+  activeAudio.load(); // cancels network request
+  stopSpectrum();
+  spectrumRunning = false;
+
+  await initAudio();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+  activeAudio.oncanplay = null;
+  activeAudio.onended = null;
+  activeAudio.onloadedmetadata = null;
+
+  // 2. Update UI once, with placeholder art
+  updateUI(song, true); // true = use placeholder art
+
+  activeAudio.src = song.src;
+  activeAudio.load();
+
+  const playNow = async () => {
+    if (activeAudio._loadId!== loadId) return; // stale load, abort
+    if (!shouldPlay) return;
+    try {
+      await activeAudio.play();
+      playBtn.textContent = '⏸️';
+      updateMediaSessionState('playing');
+      safeStartSpectrum();
+    } catch (e) {
+      if (e.name!== 'AbortError') log('Play failed:', e);
+    }
+  };
+
+  if (activeAudio.readyState >= 3) {
+    playNow();
+  } else {
+    activeAudio.oncanplay = playNow;
+  }
+
+  // 3. Only update duration here, NOT full UI
+  activeAudio.onloadedmetadata = () => {
+    if (activeAudio._loadId!== loadId) return;
+    updateDuration(); // just update time, not title/art
+    safeStartSpectrum();
+    updateActiveTrack(); 
+  };
+
+  // 4. Load art + waveform async with guards
+  setTimeout(async () => {
+    if (activeAudio._loadId!== loadId) return; // user skipped already
+
+    if (song.file && song.file instanceof File) {
+      await new Promise((resolve) => {
+        jsmediatags.read(song.file, {
+          onSuccess: (tag) => {
+            if (activeAudio._loadId!== loadId) return; // stale
+            const picture = tag.tags.picture;
+            if (picture) {
+              const byteArray = new Uint8Array(picture.data);
+              const artBlob = new Blob([byteArray], { type: picture.format });
+              if (song.artUrl?.startsWith('blob:')) URL.revokeObjectURL(song.artUrl);
+              song.artUrl = URL.createObjectURL(artBlob);
+              albumArt.src = song.artUrl;
+            }
+            resolve();
+          },
+          onError: () => {
+            song.artUrl = DEFAULT_ART;
+            albumArt.src = DEFAULT_ART;
+            resolve();
+          }
+        });
+      });
+
+      if (activeAudio._loadId!== loadId) return;
+      await setAlbumArt(song.file); // only if no embedded art found
+      await drawWaveform(song.file);
+    } else {
+      albumArt.src = DEFAULT_ART;
+    }
+
+    updateMediaSession(song);
+  }, 0);
+
+  activeAudio.onended = handleTrackEnd;
+}
+
+// Update updateUI to accept placeholder flag
+function updateUI(song, usePlaceholder = false) {
+  titleEl.textContent = song.title;
+  artistEl.textContent = song.artist;
+
+  // Set placeholder immediately so old art doesn't linger
+  albumArt.src = usePlaceholder? (song.artUrl || DEFAULT_ART) : albumArt.src;
+
+  // Highlight playlist
+  document.querySelectorAll('#song-list li').forEach(li => li.classList.remove('active'));
+  const el = document.querySelector(`#song-list li[data-id="${song.id}"]`);
+  if (el) el.classList.add('active');
 }
 
 // 1. Define animateVU first
@@ -396,11 +734,29 @@ function animateVU() {
 // 4. Init function - DEFINE THIS THIRD
 function initVU() {
   vuCanvas = document.getElementById('vu-meter');
-  if (!vuCanvas) return;
+  if (!vuCanvas ||!analyser) return;
 
   vuCtx = vuCanvas.getContext('2d');
   setupCanvasDPR(); // now this exists
   animateVU(); // and this exists too
+}
+
+function updateDuration() {
+  if (!activeAudio.duration || isNaN(activeAudio.duration)) return;
+  
+  const dur = formatTime(activeAudio.duration);
+  durationEl.textContent = dur;
+  
+  // Update Media Session duration too
+  if ('mediaSession' in navigator && navigator.mediaSession.metadata) {
+    navigator.mediaSession.metadata.duration = activeAudio.duration;
+  }
+}
+
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 // 5. Resize listener
@@ -413,14 +769,6 @@ window.addEventListener('resize', () => {
   if (vuCanvas) setupCanvasDPR();
 });
 
-nextAudio.addEventListener('play', async () => {
-  await requestWakeLock();
-});
-nextAudio.addEventListener('pause', async () => {
-  if (activeAudio.paused && nextAudio.paused) {
-    await releaseWakeLock();
-  }
-});
 
 function setupEQSliders(){
   document.querySelectorAll('.eq-band').forEach((bandEl, i) => {
@@ -527,7 +875,12 @@ async function startCrossfade() {
       crossfadeLock = -1;
       return;
     }
-    nextAudio.src = URL.createObjectURL(nextSong.blob);
+    nextAudio.src = nextSong.src; // src is already blob:http://... from loadSong
+
+// Only create new blob URL if you have File and no blob URL yet
+if (nextSong.file instanceof File &&!nextSong.src.startsWith('blob:')) {
+  nextAudio.src = URL.createObjectURL(nextSong.file);
+}
     nextAudio.dataset.songIdx = next;
     nextAudio.load();
   }
@@ -615,7 +968,7 @@ const doSwap = async () => {
       return;
     }
 
-    await setAlbumArt(currTrack.blob);
+    await setAlbumArt(currTrack.file);
     updateUI(currTrack);
     updateMediaSession(currTrack);
     renderPlaylist();
@@ -725,48 +1078,10 @@ async function handleTrackEnd() {
 }
 
 // FIX 3: Proper play promise handling
-async function loadSong(idx, shouldPlay = true) {
-  currentIdx = idx;
-  const song = songs[idx];
-  if (!song) return;
-
-  await initAudio();
-  if (audioCtx.state === 'suspended') await audioCtx.resume();
-
-  activeAudio.src = URL.createObjectURL(song.blob);
-  activeAudio.load();
-
-  // 1. Extract art with jsmediatags HERE
-  await new Promise((resolve) => {
-    jsmediatags.read(song.blob, {
-      onSuccess: (tag) => {
-        const picture = tag.tags.picture;
-        if (picture) {
-          // Convert byte array → blob → objectURL
-          const byteArray = new Uint8Array(picture.data);
-          const artBlob = new Blob([byteArray], { type: picture.format }); // "image/jpeg" or "image/png"
-          song.artUrl = URL.createObjectURL(artBlob); // <-- save it on song object
-          song.artType = picture.format; // save type too
-        }
-        resolve();
-      },
-      onError: () => {
-        song.artUrl = null; // no art found
-        resolve();
-      }
-    });
-  });
-
-  await setAlbumArt(song.blob); // your existing UI art
-  await drawWaveform(song.blob); 
-  updateUI(song);
-  updateMediaSession(song); // now song.artUrl exists
-  renderPlaylist();
-}
 
 
-function updateUI(song) {
-  // Guard: exit early if song is undefined/null
+
+function updateUI(song, usePlaceholder = false) {
   if (!song) {
     console.warn('updateUI skipped: song is undefined');
     return;
@@ -775,7 +1090,8 @@ function updateUI(song) {
   const titleEl = document.getElementById('now-title');
   const artistEl = document.getElementById('now-artist');
   const albumEl = document.getElementById('now-album');
-  const artEl = document.getElementById('album-art'); // THIS IS THE FIX
+  const artEl = document.getElementById('album-art');
+  const durationEl = document.getElementById('duration'); // add this if you have it
   
   if (titleEl) titleEl.textContent = song.title || 'Unknown Track';
   if (artistEl) artistEl.textContent = song.artist || 'Unknown Artist';
@@ -783,18 +1099,58 @@ function updateUI(song) {
     albumEl.textContent = song.album || '';
     albumEl.style.display = song.album ? 'block' : 'none';
   }
-  if (artEl) artEl.src = song.artUrl || './assets/default-art.svg';
+  
+  // 1. Reset duration immediately so old time doesn't linger
+  if (durationEl) durationEl.textContent = '0:00';
+  
+  // 2. Set art: use placeholder on shuffle, real art only when jsmediatags finishes
+  if (artEl) {
+    if (usePlaceholder) {
+      artEl.src = song.artUrl || './assets/default-art.svg';
+    } else if (song.artUrl) {
+      artEl.src = song.artUrl;
+    }
+  }
+
+  // 3. Highlight active song in playlist
+  document.querySelectorAll('#song-list li').forEach(li => li.classList.remove('active'));
+  const el = document.querySelector(`#song-list li[data-id="${song.id}"]`);
+  if (el) el.classList.add('active');
+}
+
+// Add this for metadata updates
+function updateDuration() {
+  const durationEl = document.getElementById('duration');
+  if (!durationEl || !activeAudio.duration || isNaN(activeAudio.duration)) return;
+  
+  const mins = Math.floor(activeAudio.duration / 60);
+  const secs = Math.floor(activeAudio.duration % 60);
+  durationEl.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 function preloadNextSong() {
   if (crossfadeMs === 0 || songs.length < 2) return;
+
   let nextIdx = getNextIndex();
   if (nextIdx === -1 || nextIdx === currentIdx) return;
+
   const nextSong = songs[nextIdx];
   if (!nextSong || nextAudio.dataset.songIdx == nextIdx) return;
 
-  // DELETE: if (nextAudio.src) URL.revokeObjectURL(nextAudio.src);
-  nextAudio.src = URL.createObjectURL(nextSong.blob); // Just overwrite
+  // Use existing blob URL if we already made one in loadSong
+  if (nextSong.src?.startsWith('blob:')) {
+    nextAudio.src = nextSong.src;
+  }
+  // Only create new blob URL if we have File and no blob URL yet
+  else if (nextSong.file instanceof File) {
+    nextAudio.src = URL.createObjectURL(nextSong.file);
+    // Cache it so we don't create 10 blob URLs for same song
+    nextSong.src = nextAudio.src;
+  }
+  else {
+    return; // no file, can't preload
+  }
+
   nextAudio.dataset.songIdx = nextIdx;
   nextAudio.load();
 }
@@ -829,10 +1185,6 @@ function setupMediaSessionHandlers() {
       // CHANGED: audioCtx not audioContext
       if (audioCtx && audioCtx.state === 'suspended') {
         await audioCtx.resume();
-      }
-      
-      if (currentIdx === -1 && songs.length > 0) {
-        await loadSong(0, true);
       } else {
         try {
           await activeAudio.play();
@@ -868,47 +1220,32 @@ function setupMediaSessionHandlers() {
 // ===== Controls =====
 let isPlaying = false;
 
-
-function safeStartSpectrum() {
-  if (!spectrumRunning && analyser) {
-    spectrumRunning = true;
-    drawSpectrum();
-  }
-}
-
 async function togglePlay() {
-  if (!songs.length) return;
-
-  if (!audioCtx) await initAudio();
-
-  if (!activeAudio.src || activeAudio.src === window.location.href || activeAudio.src === '' || currentIdx === -1) {
-    await loadSong(currentIdx === -1 ? 0 : currentIdx, true);
+  await initAudio();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  
+  // No song loaded yet + we have songs → load first one
+  if (currentIdx === -1 && songs.length > 0) {
+    await loadSong(0, true);
     return;
   }
-
+  
+  // Song already loaded → just toggle
   if (activeAudio.paused) {
     try {
-      // FIX 1: Resume FIRST, before play
-      if (audioCtx && audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-      }
-      
       await activeAudio.play();
-      isPlaying = true;
       playBtn.textContent = '⏸️';
-      updateMediaSessionState();
-      
-      // FIX 2: Start spectrum AFTER audio is playing
+      isPlaying = true;
+      updateMediaSessionState('playing');
       safeStartSpectrum();
-      
     } catch (e) {
       if (e.name !== 'AbortError') console.log('Play failed:', e);
     }
   } else {
     activeAudio.pause();
-    isPlaying = false;
     playBtn.textContent = '▶️';
-    updateMediaSessionState();
+    isPlaying = false;
+    updateMediaSessionState('paused');
   }
 }
 
@@ -917,18 +1254,21 @@ playBtn.addEventListener('click', togglePlay);
 function nextSong() {
   const next = getNextIndex();
   if (next!== -1) loadSong(next, true);
+  updateActiveTrack();
 }
 
 // FIX 4: Prev with proper error handling
 function prevSong() {
   if (activeAudio.currentTime > 3) {
     activeAudio.currentTime = 0;
-    activeAudio.play().catch(e => {
+    activeAudio.play().then(() => {
+      playBtn.textContent = '⏸️';
+    }).catch(e => {
       if (e.name!== 'AbortError') console.log('Prev restart failed:', e);
     });
+    updateActiveTrack();
     return;
   }
-
   const prev = getPrevIndex();
   if (prev!== -1) loadSong(prev, true);
 }
@@ -1007,12 +1347,6 @@ async function setAlbumArt(file) {
   albumArt.src = song.artUrl || DEFAULT_ART;
   if (!file) return;
 
-  // If we already have real art cached, don't re-parse
-  // if (song.artUrl && song.artUrl!== DEFAULT_ART) {
-   // albumArt.src = song.artUrl;
-   // return;
-  //} 
-
   return new Promise((resolve) => {
     jsmediatags.read(file, {
       onSuccess: tag => {
@@ -1061,10 +1395,12 @@ async function setAlbumArt(file) {
 
 function renderPlaylist() {
   const list = searchInput && searchInput.value? songs.filter(s => s.title.toLowerCase().includes(searchInput.value.toLowerCase())) : songs;
+  
   songList.innerHTML = list.map((s) => {
     const realIdx = songs.indexOf(s);
+    const artUrl = s.artUrl || DEFAULT_ART;
     return `<li data-song-id="${s.id}" data-idx="${realIdx}" class="${realIdx === currentIdx? 'active' : ''}">
-      <img class="song-thumb" src="${s.artUrl}">
+      <img class="song-thumb" src="${s.artUrl || DEFAULT_ART}" onerror="this.src=DEFAULT_ART">
       <div class="song-meta">
         <div class="song-title">${s.title}</div>
         <div class="song-artist">${s.artist}</div>
@@ -1073,7 +1409,22 @@ function renderPlaylist() {
       <button class="del-song" data-song-id="${s.id}">×</button>
     </li>`;
   }).join('');
+
+  // 👇 Remove mini-player mode from body so playlist shows
+  document.body.classList.remove('mini-player');
+  updateActiveTrack();
+
+  log('Playlist rendered: ' + songs.length + ' songs');
+  return songs.length;
 }
+
+// Save whatever array renderPlaylist receives
+const originalRender = renderPlaylist;
+renderPlaylist = function(tracks) {
+  window.currentTracks = tracks; // save it globally
+  return originalRender(tracks);
+};
+
 
 songList.onclick = e => {
   // Delete button
@@ -1102,11 +1453,19 @@ songList.onclick = e => {
   }
 
   // Click to play
-  const li = e.target.closest('li');
-  if (li) {
-    const idx = parseInt(li.dataset.idx);
-    if (!isNaN(idx)) loadSong(idx);
+  // Click to play
+const li = e.target.closest('li');
+if (li) {
+  const idx = parseInt(li.dataset.idx);
+  if (!isNaN(idx)) {
+    const song = songs[idx];
+    if (!song?.src) {
+      showToast("Re-select files to restore audio");
+      return; // <- stops the error
+    }
+    loadSong(idx);
   }
+}
 };
 
 function readTagsAndArt(file) {
@@ -1192,8 +1551,6 @@ async function handleFiles(fileList) {
       <button class="del-song">×</button>
     `;
     songListEl.appendChild(li);
-
-    if (currentIdx === -1 && songs.length === 1) loadSong(0, false);
 
     // ASYNC TAG LOAD - updates DOM when ready
     readTagsAndArt(file).then(meta => {
@@ -1388,7 +1745,7 @@ deleteStuckBtn.onclick = () => {
   setAlbumArt(null);
 };
 
-searchInput.addEventListener('input', renderPlaylist);
+searchInput.addEventListener('input', () => renderPlaylist());
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -1397,5 +1754,112 @@ if ('serviceWorker' in navigator) {
   .catch(err => console.log('SW failed: ', err));
   });
 }
+
+// Save current playlist to localStorage
+function backupPlaylist() {
+  if (!window.currentTracks || currentTracks.length === 0) {
+    showToast("No songs loaded to backup");
+    return;
+  }
+
+  const data = JSON.stringify(currentTracks, null, 2);
+  const blob = new Blob([data], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'playlist-backup.json';
+  a.click();
+
+  URL.revokeObjectURL(url);
+  showToast(`Backed up ${currentTracks.length} songs!`);
+}
+
+miniBtn.addEventListener('click', () => {
+  document.body.classList.toggle('mini-player');
+  miniBtn.textContent = document.body.classList.contains('mini-player') ? '⊞' : '⊟';
+  log(document.body.classList.contains('mini-player') ? 'Mini mode ON' : 'Full mode ON');
+});
+
+window.addEventListener('load', () => {
+  setTimeout(restorePlaylist, 3000); // 3s to be safe
+});
+
+// Wait for renderPlaylist to exist, then hijack it
+function hookRender() {
+  if(typeof renderPlaylist!== 'function') {
+    return setTimeout(hookRender, 100);
+  }
+
+  const originalRender = renderPlaylist;
+  window.renderPlaylist = function(tracks) {
+    // Only save if tracks exists and has items
+    if(tracks && tracks.length > 0) {
+      window.currentTracks = tracks;
+      console.log('📋 Tracks captured:', tracks.length, 'with src:',!!tracks[0]?.src);
+    } else {
+      log('📋 Render called with empty tracks - skip save');
+    }
+    return originalRender(tracks);
+  };
+
+log('✅ renderPlaylist hooked');
+
+}
+hookRender();
+
+// Dedupe function - removes duplicate src URLs
+function dedupeTracks(tracks) {
+  const seen = new Set();
+  return tracks.filter(t => {
+    if(seen.has(t.src)) return false;
+    seen.add(t.src);
+    return true;
+  });
+}
+
+// Backup button
+
+// Restore// Load saved metadata on start
+window.savedPlaylistMeta = null;
+
+function restorePlaylist() {
+  const raw = localStorage.getItem('crossfadeBackup');
+  if(!raw) return;
+
+  const tracks = JSON.parse(raw);
+  if(!tracks.length) return;
+
+  window.savedPlaylistMeta = tracks; // store names + order only
+  console.log('📋 Found backup:', tracks.length, 'songs. Waiting for user to re-select files...');
+  
+  // Show message in UI instead of trying to play dead blobs
+  const status = document.getElementById('status') || document.body;
+  const msg = document.createElement('div');
+  msg.id = 'restore-msg';
+  msg.style.cssText = 'position:fixed;top:10px;right:10px;background:#4CAF50;color:white;padding:10px;border-radius:6px;z-index:9999';
+  msg.textContent = `Backup found: ${tracks.length} songs. Re-select files to restore order.`;
+  document.body.appendChild(msg);
+  setTimeout(() => msg.remove(), 5000);
+}
+window.addEventListener('load', () => setTimeout(restorePlaylist, 1000));
+
+let savedPlaylistMeta = null;
+
+window.backupPlaylist = () => {
+  if (!fileInput?.files.length) return  // uses line 78 fileInput
+  const meta = Array.from(fileInput.files).map(f => ({ name: f.name }));
+  localStorage.setItem('playlistBackup', JSON.stringify(meta));
+  alert(`Backed up ${meta.length} songs!`);
+};
+
+window.restorePlaylist = () => {
+  const raw = localStorage.getItem('playlistBackup');
+  if (!raw) return 
+  savedPlaylistMeta = JSON.parse(raw);
+  alert(`Backup loaded. Re-select files to restore order.`);
+};
+
+if(window.innerWidth < 600) document.body.classList.add('mini-player');
 
 setupMediaSessionHandlers();
