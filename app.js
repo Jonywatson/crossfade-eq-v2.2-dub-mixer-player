@@ -72,6 +72,9 @@ const volume = document.getElementById('volume'), volumeBtn = document.getElemen
 const timer = document.getElementById('timer'), waveformCanvas = document.getElementById('waveform');
 const fadeSlider = document.getElementById('fade-slider'), fadeTimeLabel = document.getElementById('fade-time');
 const miniBtn = document.getElementById('miniBtn');
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsPanel = document.getElementById('settingsPanel');
+const closeSettings = document.getElementById('closeSettings');
 
 crossfadeMs = parseInt(fadeSlider.value);
 
@@ -1861,5 +1864,30 @@ window.restorePlaylist = () => {
 };
 
 if(window.innerWidth < 600) document.body.classList.add('mini-player');
+
+settingsBtn.onclick = () => settingsPanel.classList.remove('hidden');
+closeSettings.onclick = () => settingsPanel.classList.add('hidden');
+
+
+
+// ===== DOWNTOWN - FB Disclaimer Toggle =====
+document.addEventListener('DOMContentLoaded', () => {
+  const fbToggle = document.getElementById('fbDisclaimerToggle');
+  const fbDisclaimer = document.getElementById('fbDisclaimer');
+
+  if (!fbToggle || !fbDisclaimer) return;
+
+  const saved = localStorage.getItem('showFBDisclaimer');
+  const showDisclaimer = saved === null ? true : saved === 'true';
+  fbToggle.checked = showDisclaimer;
+
+  // Just show/hide. No .open magic
+  fbDisclaimer.classList.toggle('hidden', !showDisclaimer);
+
+  fbToggle.addEventListener('change', () => {
+    localStorage.setItem('showFBDisclaimer', fbToggle.checked);
+    fbDisclaimer.classList.toggle('hidden', !fbToggle.checked);
+  });
+});
 
 setupMediaSessionHandlers();
