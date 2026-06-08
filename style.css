@@ -24,14 +24,15 @@ body {
 
 .top-fixed { 
   position: fixed; 
-  top: env(safe-area-inset-top, 0); 
+  top: 0;
+  top: env(safe-area-inset-top, 0); /* notch + address bar safety */
   left: 0; 
   right: 0; 
-  z-index: 100; 
+  z-index: 9998; /* bump this up */
   background: #121212; 
-  padding: 1px 10px; explicit height so we can calc below */
+  padding: 12px 10px env(safe-area-inset-top, 12px); /* top padding respects safe area */
   box-sizing: border-box; 
-  padding-bottom: 1px;
+  min-height: 60px; /* give it actual height so browser can't collapse it */
 }
 
 /* CHANGED: align-items flex-start so tall button stack aligns to top */
