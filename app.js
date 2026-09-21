@@ -1,6 +1,3 @@
-// Line 1 of app.js - capture from file input
-window.capturedTracks = [];
-
 // === DEBUG LOGGER ===
 const DEBUG = false; // Set to true when John Breaker needs to investigate
 const log = (...args) => DEBUG && console.log(...args);
@@ -19,7 +16,6 @@ const ctx = canvas.getContext('2d');
 const barCount = 128; // or however many bars you want
 const DEFAULT_ART = 'assets/default-art.svg';
 
-let audioFileInput = null;
 let songs = [], currentIdx = -1;
 let repeatMode = 0; // 0=off, 1=all, 2=one
 let isShuffling = false, shuffleOrder = [], shufflePosition = 0;
@@ -33,27 +29,20 @@ let currentSwipeTarget = null;
 let crossfadeLock = -1; // -1 = idle, else = idx we're actively fading to
 let vuCanvas, vuCtx, vuAnimationId;
 let wakeLock = null;
-let mediaSessionReady = false;
-let activeAudio = null; 
-let audio = null; 
-let nextAudio = null; 
+let activeAudio = null;
+let audio = null;
+let nextAudio = null;
 let audioNext = null;
-let isShuffle = false;
 let clickCount = 0;
 let touchStartX = 0;
 let touchEndX = 0;
-let touchStartY = 0;
 let isSwiping = false;
-let touchStartTime = 0;
 let lastTouchX = 0;
 let velocity = 0;
-let audioContext, source, filters = [];
 
 
 const swipeThreshold = 50; 
 const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
-const audioEl = document.getElementById('audio');
-const audioNextEl = document.getElementById('audio-next');
 const playBtn = document.getElementById('play'), prevBtn = document.getElementById('prev'), nextBtn = document.getElementById('next');
 const shuffleBtn = document.getElementById('shuffle'), repeatBtn = document.getElementById('repeat');
 const eqBtn = document.getElementById('eq-btn'), eqDrawer = document.getElementById('eq-drawer'), eqClose = document.getElementById('eq-close');
@@ -61,6 +50,8 @@ const eqPreset = document.getElementById('eq-preset'), eqPresetDrawer = document
 const eqReset = document.getElementById('eq-reset');
 const fileInput = document.getElementById('file-input');
 const folderInput = document.getElementById('folder-input');
+const matchInput = document.getElementById('match-input');
+const miniBtn = document.getElementById('miniBtn');
 const backupBtn = document.getElementById('backup-btn');  // add this here
 const restoreBtn = document.getElementById('restore-btn'); // add this too for later
 const restoreInput = document.getElementById('restore-input'); // add this too for later
@@ -74,6 +65,7 @@ const fadeSlider = document.getElementById('fade-slider'), fadeTimeLabel = docum
 
 
 crossfadeMs = parseInt(fadeSlider.value);
+fadeTimeLabel.textContent = (crossfadeMs / 1000).toFixed(1) + 's';
 
 
 const deleteStuckBtn = document.getElementById('delete-stuck');
@@ -125,28 +117,6 @@ async function releaseWakeLock() {
   }
 }
 
-function setupMediaSession() {
-  if (!('mediaSession' in navigator)) return;
-  
-  const trackName = activeAudio.dataset.title || 'Rasta Spectrum';
-  const artistName = activeAudio.dataset.artist || 'Live';
-  
-  try {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: trackName,
-      artist: artistName,
-      artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }]
-    });
-    
-    // iOS requires these handlers
-    navigator.mediaSession.setActionHandler('play', () => activeAudio.play());
-    navigator.mediaSession.setActionHandler('pause', () => activeAudio.pause());
-    
-    mediaSessionReady = true;
-  } catch (err) {
-    console.log('Media Session failed:', err);
-  }
-}
 
 addSongsBtn.addEventListener('click', () => {
   clickCount++;
@@ -161,12 +131,6 @@ fileInput.addEventListener('change', async (e) => {
     e.target.value = '';
     return;
   }
-
-  // Revoke old blob URLs first
-  songs.forEach(s => {
-  if (s.src?.startsWith('blob:')) URL.revokeObjectURL(s.src);
-  if (s.artUrl?.startsWith('blob:') && s.artUrl !== DEFAULT_ART) URL.revokeObjectURL(s.artUrl);
-});
 
   const newSongs = await Promise.all(files.map(async file => {
     const meta = await readTags(file); // rename 'tags' to 'meta' to avoid confusion
@@ -197,12 +161,6 @@ folderInput.addEventListener('change', async (e) => {
     e.target.value = '';
     return;
   }
-
-  // Revoke old blob URLs first
-  songs.forEach(s => {
-    if (s.src?.startsWith('blob:')) URL.revokeObjectURL(s.src);
-    if (s.artUrl?.startsWith('blob:') && s.artUrl !== DEFAULT_ART) URL.revokeObjectURL(s.artUrl);
-  });
 
   const newSongs = await Promise.all(files.map(async file => {
     const meta = await readTags(file);
@@ -248,8 +206,9 @@ backupBtn.addEventListener('click', () => {
   a.href = url;
   a.download = `playlist-backup-${Date.now()}.json`;
   a.click();
-  
-  URL.revokeObjectURL(url);
+
+  // Delay revoke - revoking immediately can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
   log(`Backup saved: ${songs.length} tracks`);
 });
 
@@ -267,25 +226,31 @@ restoreInput.addEventListener('change', async (e) => {
 
     log(`Loading backup: ${backupData.length} tracks...`);
 
+    // Release blob URLs from the outgoing playlist before replacing it
+    songs.forEach(s => {
+      if (s.src?.startsWith('blob:')) URL.revokeObjectURL(s.src);
+      if (s.artUrl?.startsWith('blob:')) URL.revokeObjectURL(s.artUrl);
+    });
+
     songs = [];
     songList.innerHTML = '';
 
     backupData.forEach((track) => {
       songs.push({
-  id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+  id: Date.now().toString() + Math.random().toString(36).slice(2, 11),
   title: track.title || 'Unknown Track',
   artist: track.artist || 'Unknown',
   album: track.album || '',
   artUrl: track.artUrl && !track.artUrl.startsWith('blob:') ? track.artUrl : null, // <-- filter out blobs
   file: null,
-  url: null
+  src: null
 });
     });
 
     renderPlaylist(); // now it has IDs
 
     currentIdx = -1; // no track selected
-if (audio && !audio.paused) audio.pause(); // stop any phantom play
+if (activeAudio && !activeAudio.paused) activeAudio.pause(); // stop any phantom play
 log(`Restore complete: ${backupData.length} tracks loaded. Pick +songs/+folder to attach audio`);
     restoreInput.value = '';
 
@@ -295,9 +260,9 @@ log(`Restore complete: ${backupData.length} tracks loaded. Pick +songs/+folder t
   }
 });
 
-matchBtn.addEventListener('click', () => folderInput.click());
+matchBtn.addEventListener('click', () => matchInput.click());
 
-folderInput.addEventListener('change', async (e) => {
+matchInput.addEventListener('change', async (e) => {
   const files = Array.from(e.target.files).filter(f => f.type.startsWith('audio/'));
   if (!files.length) return;
 
@@ -329,12 +294,12 @@ folderInput.addEventListener('change', async (e) => {
 
   renderPlaylist();
   log(`Matched ${matched}/${songs.length} tracks. Art restored where found.`);
-  folderInput.value = '';
+  matchInput.value = '';
 });
 
 async function readID3Tags(buffer) {
   const view = new DataView(buffer);
-  if (view.getUint32(0) !== 0x494433) return {};
+  if (view.getUint8(0) !== 0x49 || view.getUint8(1) !== 0x44 || view.getUint8(2) !== 0x33) return {};
   let offset = 10;
   while (offset < buffer.byteLength - 10) {
     const frameId = String.fromCharCode(...new Uint8Array(buffer, offset, 4));
@@ -380,7 +345,9 @@ function readTags(file) {
 }
 
 document.addEventListener('touchstart', (e) => {
-  const art = e.target.closest('#album-art,.song-thumb');
+  // Only the big album-art swipes to skip tracks. Playlist thumbnails must
+  // stay tap-to-play - intercepting touchstart there ate the click event.
+  const art = e.target.closest('#album-art');
   if (art) {
     e.preventDefault();
     currentSwipeTarget = art;
@@ -403,7 +370,7 @@ document.addEventListener('touchend', (e) => {
 });
 
 document.addEventListener('touchcancel', (e) => {
-  if (isSwiping) {
+  if (isSwiping && currentSwipeTarget) {
     currentSwipeTarget.style.transform = 'translateX(0px)';
     isSwiping = false;
     currentSwipeTarget = null;
@@ -416,12 +383,6 @@ function safeStartSpectrum() {
   if (spectrumRunning || !analyser || !dataArray) return;
   spectrumRunning = true;
   drawSpectrum();
-}
-
-function drawSpectrum() {
-  if (!spectrumRunning) return;
-  animId = requestAnimationFrame(drawSpectrum);
-  analyser.getByteFrequencyData(dataArray);
 }
 
 function stopSpectrum() {
@@ -479,16 +440,18 @@ async function initAudio() {
   const activeSource = audioCtx.createMediaElementSource(activeAudio);
   const nextSource = audioCtx.createMediaElementSource(nextAudio);
 
-  activeSource.connect(eqChain[0]);
-  nextSource.connect(eqChain[0]);
+  // Each source gets its own gain BEFORE the shared EQ chain, so the
+  // crossfade curves actually control each track's level independently
+  // instead of both tracks summing first and being gained together.
+  activeSource.connect(activeGain);
+  nextSource.connect(nextGain);
+  activeGain.connect(eqChain[0]);
+  nextGain.connect(eqChain[0]);
   eqChain[eqChain.length - 1].connect(preGain);
 
   const mixBus = audioCtx.createGain();
   mixBus.gain.value = 1;
-  preGain.connect(activeGain);
-  preGain.connect(nextGain);
-  activeGain.connect(mixBus);
-  nextGain.connect(mixBus);
+  preGain.connect(mixBus);
   mixBus.connect(audioCtx.destination);
 
   analyser = audioCtx.createAnalyser();
@@ -508,7 +471,7 @@ async function initAudio() {
     activeAudio.addEventListener('play', async () => {
       if (audioCtx.state === 'suspended') await audioCtx.resume();
       await requestWakeLock();
-      setupMediaSession();
+      if (currentIdx >= 0 && songs[currentIdx]) updateMediaSession(songs[currentIdx]);
       updateMediaSessionState('playing');
     });
 
@@ -531,7 +494,7 @@ async function initAudio() {
     nextAudio.addEventListener('play', async () => {
   if (audioCtx.state === 'suspended') await audioCtx.resume(); // ADD THIS
   await requestWakeLock();
-  setupMediaSession(); // ADD THIS
+  if (currentIdx >= 0 && songs[currentIdx]) updateMediaSession(songs[currentIdx]);
   updateMediaSessionState('playing'); // ADD THIS
 });
 
@@ -563,9 +526,9 @@ nextAudio.addEventListener('ended', async () => {
   initVU();
 }
 
-function updateActiveTrack() {
+function updateActiveTrack(retriesLeft = 10) {
   const list = document.querySelector('#song-list');
-  if (!list) return; // playlist not in DOM yet
+  if (!list || currentIdx < 0) return; // playlist not in DOM yet, or nothing selected
 
   // Remove old highlight
   list.querySelectorAll('li').forEach(item => item.classList.remove('active'));
@@ -575,14 +538,18 @@ function updateActiveTrack() {
   if (currentItem) {
     currentItem.classList.add('active');
     currentItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  } else {
+  } else if (retriesLeft > 0) {
     log('updateActiveTrack: li[data-idx="'+currentIdx+'"] not found yet');
     // Retry 100ms later if DOM still building
-    setTimeout(updateActiveTrack, 100);
+    setTimeout(() => updateActiveTrack(retriesLeft - 1), 100);
   }
 }
 
 async function loadSong(idx, shouldPlay = true) {
+  // Must exist before we touch activeAudio below (it's created lazily).
+  await initAudio();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
   // Guard: abort if this load is stale
   const loadId = Symbol();
   activeAudio._loadId = loadId;
@@ -605,8 +572,10 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
   stopSpectrum();
   spectrumRunning = false;
 
-  await initAudio();
-  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  // Clear the old track's waveform now, so it doesn't linger on screen
+  // while the new one decodes (drawWaveform can take a while on big files).
+  waveformData = [];
+  waveformCanvas.getContext('2d').clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
 
   activeAudio.oncanplay = null;
   activeAudio.onended = null;
@@ -674,7 +643,7 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
 
       if (activeAudio._loadId!== loadId) return;
       await setAlbumArt(song.file); // only if no embedded art found
-      await drawWaveform(song.file);
+      await drawWaveform(song.file, song.id);
     } else {
       albumArt.src = DEFAULT_ART;
     }
@@ -683,20 +652,6 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
   }, 0);
 
   activeAudio.onended = handleTrackEnd;
-}
-
-// Update updateUI to accept placeholder flag
-function updateUI(song, usePlaceholder = false) {
-  titleEl.textContent = song.title;
-  artistEl.textContent = song.artist;
-
-  // Set placeholder immediately so old art doesn't linger
-  albumArt.src = usePlaceholder? (song.artUrl || DEFAULT_ART) : albumArt.src;
-
-  // Highlight playlist
-  document.querySelectorAll('#song-list li').forEach(li => li.classList.remove('active'));
-  const el = document.querySelector(`#song-list li[data-id="${song.id}"]`);
-  if (el) el.classList.add('active');
 }
 
 // 1. Define animateVU first
@@ -741,30 +696,7 @@ function initVU() {
   animateVU(); // and this exists too
 }
 
-function updateDuration() {
-  if (!activeAudio.duration || isNaN(activeAudio.duration)) return;
-  
-  const dur = formatTime(activeAudio.duration);
-  durationEl.textContent = dur;
-  
-  // Update Media Session duration too
-  if ('mediaSession' in navigator && navigator.mediaSession.metadata) {
-    navigator.mediaSession.metadata.duration = activeAudio.duration;
-  }
-}
-
-function formatTime(seconds) {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
-
-// 5. Resize listener
-window.addEventListener('resize', () => {
-  if (vuCanvas) setupCanvasDPR();
-});
-
-// Handle phone rotation / resize
+// 5. Resize listener (also covers phone rotation)
 window.addEventListener('resize', () => {
   if (vuCanvas) setupCanvasDPR();
 });
@@ -945,8 +877,14 @@ const doSwap = async () => {
     }
 
     activeAudio.pause();
-    activeGain.gain.setValueAtTime(0, audioCtx.currentTime);
-    nextGain.gain.setValueAtTime(targetVol, audioCtx.currentTime);
+    const swapNow = audioCtx.currentTime;
+    // Cancel any still-running setValueCurveAtTime before scheduling new
+    // values, or Chrome throws NotSupportedError when this lands inside
+    // the curve's window (e.g. forceSwap firing early on 'ended').
+    activeGain.gain.cancelScheduledValues(swapNow);
+    nextGain.gain.cancelScheduledValues(swapNow);
+    activeGain.gain.setValueAtTime(0, swapNow);
+    nextGain.gain.setValueAtTime(targetVol, swapNow);
 
     activeAudio.removeEventListener('timeupdate', onTimeUpdate);
     activeAudio.removeEventListener('ended', handleTrackEnd);
@@ -974,6 +912,12 @@ const doSwap = async () => {
     renderPlaylist();
     preloadNextSong();
 
+    // Waveform never updated after a crossfade before - it kept showing
+    // the outgoing track's shape. Clear it now, decode the new one async.
+    waveformData = [];
+    waveformCanvas.getContext('2d').clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+    drawWaveform(currTrack.file, currTrack.id);
+
   } catch (e) {
     console.log('Crossfade swap failed:', e);
   } finally {
@@ -992,26 +936,32 @@ const doSwap = async () => {
   activeAudio.addEventListener('ended', forceSwap, { once: true });
 }
 // ===== Playback Logic =====
-function getNextIndex() {
+// peek=true just looks at what the next track would be, without advancing
+// shufflePosition. Used by checkCrossfade/preloadNextSong, which must not
+// consume a shuffle step every time they merely check ahead.
+function getNextIndex(peek = false) {
   if (repeatMode === 2) return currentIdx;
 
   if (isShuffling) {
     // Ensure shuffleOrder is valid
     if (!shuffleOrder.length || shuffleOrder.length!== songs.length) {
+      if (peek) return currentIdx; // don't mutate state just to peek
       generateShuffleOrder();
       shufflePosition = shuffleOrder.indexOf(currentIdx);
     }
 
-    shufflePosition++;
-    if (shufflePosition >= shuffleOrder.length) {
+    let pos = shufflePosition + 1;
+    if (pos >= shuffleOrder.length) {
       if (repeatMode === 1) {
+        if (peek) return shuffleOrder[0];
         generateShuffleOrder();
-        shufflePosition = 0;
+        pos = 0;
       } else {
         return -1;
       }
     }
-    return shuffleOrder[shufflePosition];
+    if (!peek) shufflePosition = pos;
+    return shuffleOrder[pos];
   } else {
     let next = currentIdx + 1;
     if (next >= songs.length) {
@@ -1114,24 +1064,33 @@ function updateUI(song, usePlaceholder = false) {
 
   // 3. Highlight active song in playlist
   document.querySelectorAll('#song-list li').forEach(li => li.classList.remove('active'));
-  const el = document.querySelector(`#song-list li[data-id="${song.id}"]`);
+  const el = document.querySelector(`#song-list li[data-song-id="${song.id}"]`);
   if (el) el.classList.add('active');
 }
 
 // Add this for metadata updates
 function updateDuration() {
+  if (!activeAudio.duration || isNaN(activeAudio.duration)) return;
+
   const durationEl = document.getElementById('duration');
-  if (!durationEl || !activeAudio.duration || isNaN(activeAudio.duration)) return;
-  
-  const mins = Math.floor(activeAudio.duration / 60);
-  const secs = Math.floor(activeAudio.duration % 60);
-  durationEl.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+  if (durationEl) {
+    const mins = Math.floor(activeAudio.duration / 60);
+    const secs = Math.floor(activeAudio.duration % 60);
+    durationEl.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  // Update Media Session duration too
+  if ('mediaSession' in navigator && navigator.mediaSession.metadata) {
+    navigator.mediaSession.metadata.duration = activeAudio.duration;
+  }
 }
 
 function preloadNextSong() {
   if (crossfadeMs === 0 || songs.length < 2) return;
 
-  let nextIdx = getNextIndex();
+  // Peek only - the real advance/commit happens in checkCrossfade() when
+  // the fade actually triggers, so this must not consume a shuffle step.
+  let nextIdx = getNextIndex(true);
   if (nextIdx === -1 || nextIdx === currentIdx) return;
 
   const nextSong = songs[nextIdx];
@@ -1259,6 +1218,7 @@ function nextSong() {
 
 // FIX 4: Prev with proper error handling
 function prevSong() {
+  if (!activeAudio) return;
   if (activeAudio.currentTime > 3) {
     activeAudio.currentTime = 0;
     activeAudio.play().then(() => {
@@ -1361,7 +1321,7 @@ async function setAlbumArt(file) {
             albumArt.src = song.artUrl;
 
             // UPDATE THE PLAYLIST ROW TOO - this is key
-            const el = document.querySelector(`#song-list li[data-id="${song.id}"]`);
+            const el = document.querySelector(`#song-list li[data-song-id="${song.id}"]`);
             if (el) {
               el.querySelector('img').src = song.artUrl;
               log('Updated playlist art for:', song.title);
@@ -1376,7 +1336,7 @@ async function setAlbumArt(file) {
         if (tag.tags.artist) song.artist = tag.tags.artist;
         if (tag.tags.album) song.album = tag.tags.album;
 
-        const el = document.querySelector(`#song-list li[data-id="${song.id}"]`);
+        const el = document.querySelector(`#song-list li[data-song-id="${song.id}"]`);
         if (el) {
           el.querySelector('.song-title').textContent = song.title;
           el.querySelector('.song-artist').textContent = song.artist;
@@ -1393,18 +1353,24 @@ async function setAlbumArt(file) {
   });
 }
 
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
 function renderPlaylist() {
   const list = searchInput && searchInput.value? songs.filter(s => s.title.toLowerCase().includes(searchInput.value.toLowerCase())) : songs;
-  
+
   songList.innerHTML = list.map((s) => {
     const realIdx = songs.indexOf(s);
     const artUrl = s.artUrl || DEFAULT_ART;
     return `<li data-song-id="${s.id}" data-idx="${realIdx}" class="${realIdx === currentIdx? 'active' : ''}">
-      <img class="song-thumb" src="${s.artUrl || DEFAULT_ART}" onerror="this.src=DEFAULT_ART">
+      <img class="song-thumb" src="${escapeHtml(artUrl)}" onerror="this.onerror=null;this.src='${DEFAULT_ART}'">
       <div class="song-meta">
-        <div class="song-title">${s.title}</div>
-        <div class="song-artist">${s.artist}</div>
-        ${s.album? `<div class="song-album">${s.album}</div>` : ''}
+        <div class="song-title">${escapeHtml(s.title)}</div>
+        <div class="song-artist">${escapeHtml(s.artist)}</div>
+        ${s.album? `<div class="song-album">${escapeHtml(s.album)}</div>` : ''}
       </div>
       <button class="del-song" data-song-id="${s.id}">×</button>
     </li>`;
@@ -1414,16 +1380,10 @@ function renderPlaylist() {
   document.body.classList.remove('mini-player');
   updateActiveTrack();
 
+  window.currentTracks = songs; // save it globally for backup/restore
   log('Playlist rendered: ' + songs.length + ' songs');
   return songs.length;
 }
-
-// Save whatever array renderPlaylist receives
-const originalRender = renderPlaylist;
-renderPlaylist = function(tracks) {
-  window.currentTracks = tracks; // save it globally
-  return originalRender(tracks);
-};
 
 
 songList.onclick = e => {
@@ -1436,11 +1396,14 @@ songList.onclick = e => {
     if (idx === -1) return;
 
     if (songs[idx].artUrl?.startsWith('blob:')) URL.revokeObjectURL(songs[idx].artUrl);
+    if (songs[idx].src?.startsWith('blob:')) URL.revokeObjectURL(songs[idx].src);
     songs.splice(idx, 1);
 
     if (currentIdx === idx) {
-      activeAudio.pause();
-      activeAudio.currentTime = 0;
+      if (activeAudio) {
+        activeAudio.pause();
+        activeAudio.currentTime = 0;
+      }
       currentIdx = -1;
       resetPlayer();
     } else if (currentIdx > idx) {
@@ -1468,152 +1431,41 @@ if (li) {
 }
 };
 
-function readTagsAndArt(file) {
-  return new Promise((resolve) => {
-  log('Reading tags for:', file.name);
-    jsmediatags.read(file, {
-      onSuccess: function(tag) {
-        const tags = tag.tags;
-        log('SUCCESS for', file.name, 'Title:', tags.title, 'Artist:', tags.artist, 'Has picture:',!!tags.picture);
-
-        let artUrl = DEFAULT_ART;
-        if (tags.picture) {
-          try {
-            const { data, format } = tags.picture;
-            const byteArray = new Uint8Array(data);
-            const blob = new Blob([byteArray], { type: format });
-            artUrl = URL.createObjectURL(blob);
-            log('Art extracted for', file.name, 'Size:', data.length);
-          } catch (e) {
-            console.error('Art extraction CRASHED for', file.name, e);
-          }
-        }
-
-        resolve({
-          title: tags.title || file.name.replace(/\.[^/.]+$/, ""),
-          artist: tags.artist || 'Unknown Artist',
-          album: tags.album || '',
-          artUrl: artUrl
-        });
-      },
-      onError: function(error) {
-        console.error('TAG READ FAILED for', file.name, 'Error:', error.type, error.info);
-        resolve({
-          title: file.name.replace(/\.[^/.]+$/, ""),
-          artist: 'Unknown Artist',
-          album: '',
-          artUrl: DEFAULT_ART
-        });
-      }
-    });
-  });
-}
-
-async function handleFiles(fileList) {
-  const files = Array.from(fileList).filter(f => {
-    const hasAudioType = f.type.startsWith('audio/');
-    const hasAudioExt = /\.(mp3|m4a|aac|ogg|wav|flac|opus|wma)$/i.test(f.name);
-    return hasAudioType || hasAudioExt;
-  });
-
-  log(`Processing ${files.length} audio files out of ${fileList.length} total`);
-
-  const songListEl = document.querySelector('#song-list');
-  if (!songListEl) return console.error('song-list element not found');
-  songListEl.innerHTML = '';
-  songs.length = 0;
-
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const id = crypto.randomUUID();
-
-    const song = {
-      id,
-      title: file.name.replace(/\.[^/.]+$/, ""),
-      artist: 'Loading...',
-      album: 'Loading...',
-      blob: file,
-      artUrl: DEFAULT_ART
-    };
-
-    songs.push(song);
-
-    const li = document.createElement('li');
-    li.dataset.idx = i;
-    li.dataset.id = song.id;
-    li.innerHTML = `
-      <img src="${song.artUrl}">
-      <div class="song-meta">
-        <div class="song-title">${song.title}</div>
-        <div class="song-artist">${song.artist}</div>
-        <div class="song-album">${song.album}</div>
-      </div>
-      <button class="del-song">×</button>
-    `;
-    songListEl.appendChild(li);
-
-    // ASYNC TAG LOAD - updates DOM when ready
-    readTagsAndArt(file).then(meta => {
-  song.title = meta.title;
-  song.artist = meta.artist;
-  song.album = meta.album;
-
-  if (meta.artUrl!== DEFAULT_ART) {
-    if (song.artUrl && song.artUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(song.artUrl);
-    }
-    song.artUrl = meta.artUrl;
-  }
-
-  // USE data-idx NOT data-id - idx is set synchronously when you create the li
-  const el = songListEl.querySelector(`li[data-idx="${i}"]`); // <- i from the for loop
-  if (el) {
-    el.querySelector('img').src = song.artUrl;
-    el.querySelector('.song-title').textContent = song.title;
-    el.querySelector('.song-artist').textContent = song.artist;
-    el.querySelector('.song-album').textContent = song.album;
-    log('Updated playlist row for:', song.title); // <- add this to confirm
-  } else {
-    console.error('Could not find li[data-idx="' + i + '"] for', song.title);
-  }
-}).catch(err => {
-  console.warn('Tag read failed for', file.name, err);
-});
-
-    await new Promise(r => setTimeout(r, 0));
-  }
-
-  if (isShuffling) generateShuffleOrder();
-  log(`Done. Final playlist: ${songs.length} songs`);
-
-  // ADD THESE 2 LINES ↓
-const list = document.getElementById('song-list');
-list.scrollTop = list.scrollHeight; // jump to bottom so new songs show
-}
-
 addFolderBtn.onclick = () => folderInput.click();
 
 
 // ===== Waveform =====
-async function drawWaveform(file) {
+// forSongId: decoding a big file can take a while - if the user has
+// skipped to a different track by the time we finish, bail instead of
+// painting the wrong track's waveform over the current one.
+async function drawWaveform(file, forSongId) {
   if (!file) return;
-  const ctx = waveformCanvas.getContext('2d');
   const w = waveformCanvas.clientWidth || 600;
   const h = waveformCanvas.clientHeight || 40;
   waveformCanvas.width = w;
   waveformCanvas.height = h;
-  const buf = await file.arrayBuffer();
-  const audioBuf = await (audioCtx || new AudioContext()).decodeAudioData(buf);
+
+  let audioBuf;
+  try {
+    const buf = await file.arrayBuffer();
+    audioBuf = await (audioCtx || new AudioContext()).decodeAudioData(buf);
+  } catch (e) {
+    log('Waveform decode failed:', e);
+    return;
+  }
+
+  if (forSongId !== undefined && songs[currentIdx]?.id !== forSongId) return; // stale
+
   const raw = audioBuf.getChannelData(0);
   const samples = w;
   const block = Math.floor(raw.length / samples) || 1;
-  waveformData = Array.from({length: samples}, (_, i) => {
+  const data = Array.from({length: samples}, (_, i) => {
     let max = 0;
     for (let j = 0; j < block; j++) max = Math.max(max, Math.abs(raw[i * block + j] || 0));
     return max;
   });
-  const maxVal = Math.max(...waveformData) || 1;
-  waveformData = waveformData.map(v => v / maxVal);
+  const maxVal = Math.max(...data) || 1;
+  waveformData = data.map(v => v / maxVal);
   renderWaveform();
 }
 
@@ -1643,9 +1495,9 @@ waveformCanvas.addEventListener('click', e => {
 
 // ===== Spectrum =====
 function drawSpectrum() {
-  if (!analyser ||!dataArray ||!ctx) return;
+  if (!spectrumRunning || !analyser || !dataArray || !ctx) return;
 
-  requestAnimationFrame(drawSpectrum);
+  animId = requestAnimationFrame(drawSpectrum);
 
   analyser.getByteFrequencyData(dataArray);
 
@@ -1697,6 +1549,7 @@ function resetPlayer() {
   nowArtist.textContent = 'Unknown Artist';
   albumArt.src = DEFAULT_ART;
   timer.textContent = '0:00 / 0:00';
+  waveformData = []; // otherwise a late timeupdate/renderWaveform repaints stale bars
   const ctx = waveformCanvas.getContext('2d');
   ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
 }
@@ -1742,9 +1595,11 @@ deleteStuckBtn.onclick = () => {
   songs.forEach(s => { if (s.artUrl && s.artUrl.startsWith('blob:')) URL.revokeObjectURL(s.artUrl); });
   songs = [];
   currentIdx = -1;
-  activeAudio.pause();
-  if (activeAudio.src) URL.revokeObjectURL(activeAudio.src);
-  activeAudio.src = '';
+  if (activeAudio) {
+    activeAudio.pause();
+    if (activeAudio.src) URL.revokeObjectURL(activeAudio.src);
+    activeAudio.src = '';
+  }
   renderPlaylist();
   setAlbumArt(null);
 };
@@ -1759,110 +1614,11 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-// Save current playlist to localStorage
-function backupPlaylist() {
-  if (!window.currentTracks || currentTracks.length === 0) {
-    showToast("No songs loaded to backup");
-    return;
-  }
-
-  const data = JSON.stringify(currentTracks, null, 2);
-  const blob = new Blob([data], {type: 'application/json'});
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'playlist-backup.json';
-  a.click();
-
-  URL.revokeObjectURL(url);
-  showToast(`Backed up ${currentTracks.length} songs!`);
-}
-
 miniBtn.addEventListener('click', () => {
   document.body.classList.toggle('mini-player');
   miniBtn.textContent = document.body.classList.contains('mini-player') ? '⊞' : '⊟';
   log(document.body.classList.contains('mini-player') ? 'Mini mode ON' : 'Full mode ON');
 });
-
-window.addEventListener('load', () => {
-  setTimeout(restorePlaylist, 3000); // 3s to be safe
-});
-
-// Wait for renderPlaylist to exist, then hijack it
-function hookRender() {
-  if(typeof renderPlaylist!== 'function') {
-    return setTimeout(hookRender, 100);
-  }
-
-  const originalRender = renderPlaylist;
-  window.renderPlaylist = function(tracks) {
-    // Only save if tracks exists and has items
-    if(tracks && tracks.length > 0) {
-      window.currentTracks = tracks;
-      console.log('📋 Tracks captured:', tracks.length, 'with src:',!!tracks[0]?.src);
-    } else {
-      log('📋 Render called with empty tracks - skip save');
-    }
-    return originalRender(tracks);
-  };
-
-log('✅ renderPlaylist hooked');
-
-}
-hookRender();
-
-// Dedupe function - removes duplicate src URLs
-function dedupeTracks(tracks) {
-  const seen = new Set();
-  return tracks.filter(t => {
-    if(seen.has(t.src)) return false;
-    seen.add(t.src);
-    return true;
-  });
-}
-
-// Backup button
-
-// Restore// Load saved metadata on start
-window.savedPlaylistMeta = null;
-
-function restorePlaylist() {
-  const raw = localStorage.getItem('crossfadeBackup');
-  if(!raw) return;
-
-  const tracks = JSON.parse(raw);
-  if(!tracks.length) return;
-
-  window.savedPlaylistMeta = tracks; // store names + order only
-  console.log('📋 Found backup:', tracks.length, 'songs. Waiting for user to re-select files...');
-  
-  // Show message in UI instead of trying to play dead blobs
-  const status = document.getElementById('status') || document.body;
-  const msg = document.createElement('div');
-  msg.id = 'restore-msg';
-  msg.style.cssText = 'position:fixed;top:10px;right:10px;background:#4CAF50;color:white;padding:10px;border-radius:6px;z-index:9999';
-  msg.textContent = `Backup found: ${tracks.length} songs. Re-select files to restore order.`;
-  document.body.appendChild(msg);
-  setTimeout(() => msg.remove(), 5000);
-}
-window.addEventListener('load', () => setTimeout(restorePlaylist, 1000));
-
-let savedPlaylistMeta = null;
-
-window.backupPlaylist = () => {
-  if (!fileInput?.files.length) return  // uses line 78 fileInput
-  const meta = Array.from(fileInput.files).map(f => ({ name: f.name }));
-  localStorage.setItem('playlistBackup', JSON.stringify(meta));
-  alert(`Backed up ${meta.length} songs!`);
-};
-
-window.restorePlaylist = () => {
-  const raw = localStorage.getItem('playlistBackup');
-  if (!raw) return 
-  savedPlaylistMeta = JSON.parse(raw);
-  alert(`Backup loaded. Re-select files to restore order.`);
-};
 
 if(window.innerWidth < 600) document.body.classList.add('mini-player');
 
