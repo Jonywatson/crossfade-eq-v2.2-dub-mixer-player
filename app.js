@@ -798,67 +798,17 @@ async function startCrossfade() {
     return;
   }
 
-  // Don't remove timeupdate here - doSwap handles it
-
-  if (!nextAudio.src || nextAudio.dataset.songIdx!= next) {
-    const nextSong = songs[next];
-    if (!nextSong) {
-      isCrossfading = false;
-      crossfadeLock = -1;
-      return;
-    }
-    nextAudio.src = nextSong.src; // src is already blob:http://... from loadSong
-
-// Only create new blob URL if you have File and no blob URL yet
-if (nextSong.file instanceof File &&!nextSong.src.startsWith('blob:')) {
-  nextAudio.src = URL.createObjectURL(nextSong.file);
-}
-    nextAudio.dataset.songIdx = next;
-    nextAudio.load();
-  }
-
-  nextAudio.currentTime = 0;
-  nextGain.gain.value = 0;
-
-  try {
-    if (nextAudio.readyState < 2) {
-      await new Promise((resolve, reject) => {
-        nextAudio.addEventListener('canplay', resolve, { once: true });
-        nextAudio.addEventListener('error', reject, { once: true });
-        setTimeout(() => reject('timeout'), 2000);
-      });
-    }
-    await nextAudio.play();
-  } catch (e) {
-    log('Crossfade aborted:', e);
+  const nextSong = songs[next];
+  if (!nextSong) {
     isCrossfading = false;
     crossfadeLock = -1;
     return;
   }
 
-  const now = audioCtx.currentTime;
-const fadeTime = crossfadeMs / 1000;
-const targetVol = parseFloat(volume.value) || 1;
-const samples = 100;
-const curveA = new Float32Array(samples);
-const curveB = new Float32Array(samples);
+  // Don't remove timeupdate here - doSwap handles it
+  const targetVol = parseFloat(volume.value) || 1; // computed early - doSwap may run before the curve-building code below does
 
-// Build equal-power curves
-for (let i = 0; i < samples; i++) {
-  const progress = i / (samples - 1);
-  curveA[i] = Math.cos(progress * Math.PI / 2) * targetVol; // fades out
-  curveB[i] = Math.sin(progress * Math.PI / 2) * targetVol; // fades in
-}
-
-activeGain.gain.cancelScheduledValues(now);
-nextGain.gain.cancelScheduledValues(now);
-
-activeGain.gain.setValueAtTime(activeGain.gain.value || targetVol, now);
-nextGain.gain.setValueAtTime(0.001, now);
-
-activeGain.gain.setValueCurveAtTime(curveA, now, fadeTime);
-nextGain.gain.setValueCurveAtTime(curveB, now, fadeTime);
-const doSwap = async () => {
+  const doSwap = async () => {
   log('doSwap START. currentIdx:', currentIdx, '->', crossfadeLock);
 
   try {
@@ -925,15 +875,76 @@ const doSwap = async () => {
   }
 };
 
-  const crossfadeTimeout = setTimeout(doSwap, crossfadeMs);
-
+  // Register the "current track ended before the fade finished" fallback
+  // NOW, before the (possibly slow) wait for the next track below. It used
+  // to be registered only after that wait resolved - if the active track
+  // reached natural end while we were still waiting on a slow/never-ready
+  // next track, nothing was listening yet and playback stalled dead.
+  let crossfadeTimeout = null;
   const forceSwap = () => {
-    clearTimeout(crossfadeTimeout);
+    if (crossfadeTimeout) clearTimeout(crossfadeTimeout);
     activeGain.gain.cancelScheduledValues(audioCtx.currentTime);
     nextGain.gain.cancelScheduledValues(audioCtx.currentTime);
     doSwap();
   };
   activeAudio.addEventListener('ended', forceSwap, { once: true });
+
+  if (!nextAudio.src || nextAudio.dataset.songIdx!= next) {
+    nextAudio.src = nextSong.src; // src is already blob:http://... from loadSong
+
+    // Only create new blob URL if you have File and no blob URL yet
+    if (nextSong.file instanceof File &&!nextSong.src.startsWith('blob:')) {
+      nextAudio.src = URL.createObjectURL(nextSong.file);
+    }
+    nextAudio.dataset.songIdx = next;
+    nextAudio.load();
+  }
+
+  nextAudio.currentTime = 0;
+  nextGain.gain.value = 0;
+
+  try {
+    if (nextAudio.readyState < 2) {
+      await new Promise((resolve, reject) => {
+        nextAudio.addEventListener('canplay', resolve, { once: true });
+        nextAudio.addEventListener('error', reject, { once: true });
+        setTimeout(() => reject('timeout'), 2000);
+      });
+    }
+    await nextAudio.play();
+  } catch (e) {
+    log('Crossfade setup failed, forcing a hard cut so playback continues:', e);
+    activeAudio.removeEventListener('ended', forceSwap);
+    isCrossfading = false;
+    crossfadeLock = -1;
+    // Guarantee forward progress even though the smooth fade couldn't be set up
+    await loadSong(next, true);
+    return;
+  }
+
+  const now = audioCtx.currentTime;
+  const fadeTime = crossfadeMs / 1000;
+  const samples = 100;
+  const curveA = new Float32Array(samples);
+  const curveB = new Float32Array(samples);
+
+  // Build equal-power curves
+  for (let i = 0; i < samples; i++) {
+    const progress = i / (samples - 1);
+    curveA[i] = Math.cos(progress * Math.PI / 2) * targetVol; // fades out
+    curveB[i] = Math.sin(progress * Math.PI / 2) * targetVol; // fades in
+  }
+
+  activeGain.gain.cancelScheduledValues(now);
+  nextGain.gain.cancelScheduledValues(now);
+
+  activeGain.gain.setValueAtTime(activeGain.gain.value || targetVol, now);
+  nextGain.gain.setValueAtTime(0.001, now);
+
+  activeGain.gain.setValueCurveAtTime(curveA, now, fadeTime);
+  nextGain.gain.setValueCurveAtTime(curveB, now, fadeTime);
+
+  crossfadeTimeout = setTimeout(doSwap, crossfadeMs);
 }
 // ===== Playback Logic =====
 // peek=true just looks at what the next track would be, without advancing
