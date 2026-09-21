@@ -572,6 +572,11 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
   stopSpectrum();
   spectrumRunning = false;
 
+  // Clear the old track's waveform now, so it doesn't linger on screen
+  // while the new one decodes (drawWaveform can take a while on big files).
+  waveformData = [];
+  waveformCanvas.getContext('2d').clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+
   activeAudio.oncanplay = null;
   activeAudio.onended = null;
   activeAudio.onloadedmetadata = null;
@@ -638,7 +643,7 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
 
       if (activeAudio._loadId!== loadId) return;
       await setAlbumArt(song.file); // only if no embedded art found
-      await drawWaveform(song.file);
+      await drawWaveform(song.file, song.id);
     } else {
       albumArt.src = DEFAULT_ART;
     }
@@ -906,6 +911,12 @@ const doSwap = async () => {
     updateMediaSession(currTrack);
     renderPlaylist();
     preloadNextSong();
+
+    // Waveform never updated after a crossfade before - it kept showing
+    // the outgoing track's shape. Clear it now, decode the new one async.
+    waveformData = [];
+    waveformCanvas.getContext('2d').clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+    drawWaveform(currTrack.file, currTrack.id);
 
   } catch (e) {
     console.log('Crossfade swap failed:', e);
@@ -1424,25 +1435,37 @@ addFolderBtn.onclick = () => folderInput.click();
 
 
 // ===== Waveform =====
-async function drawWaveform(file) {
+// forSongId: decoding a big file can take a while - if the user has
+// skipped to a different track by the time we finish, bail instead of
+// painting the wrong track's waveform over the current one.
+async function drawWaveform(file, forSongId) {
   if (!file) return;
-  const ctx = waveformCanvas.getContext('2d');
   const w = waveformCanvas.clientWidth || 600;
   const h = waveformCanvas.clientHeight || 40;
   waveformCanvas.width = w;
   waveformCanvas.height = h;
-  const buf = await file.arrayBuffer();
-  const audioBuf = await (audioCtx || new AudioContext()).decodeAudioData(buf);
+
+  let audioBuf;
+  try {
+    const buf = await file.arrayBuffer();
+    audioBuf = await (audioCtx || new AudioContext()).decodeAudioData(buf);
+  } catch (e) {
+    log('Waveform decode failed:', e);
+    return;
+  }
+
+  if (forSongId !== undefined && songs[currentIdx]?.id !== forSongId) return; // stale
+
   const raw = audioBuf.getChannelData(0);
   const samples = w;
   const block = Math.floor(raw.length / samples) || 1;
-  waveformData = Array.from({length: samples}, (_, i) => {
+  const data = Array.from({length: samples}, (_, i) => {
     let max = 0;
     for (let j = 0; j < block; j++) max = Math.max(max, Math.abs(raw[i * block + j] || 0));
     return max;
   });
-  const maxVal = Math.max(...waveformData) || 1;
-  waveformData = waveformData.map(v => v / maxVal);
+  const maxVal = Math.max(...data) || 1;
+  waveformData = data.map(v => v / maxVal);
   renderWaveform();
 }
 
@@ -1526,6 +1549,7 @@ function resetPlayer() {
   nowArtist.textContent = 'Unknown Artist';
   albumArt.src = DEFAULT_ART;
   timer.textContent = '0:00 / 0:00';
+  waveformData = []; // otherwise a late timeupdate/renderWaveform repaints stale bars
   const ctx = waveformCanvas.getContext('2d');
   ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
 }
