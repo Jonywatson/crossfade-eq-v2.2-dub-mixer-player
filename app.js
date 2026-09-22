@@ -571,6 +571,7 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
   activeAudio.load(); // cancels network request
   stopSpectrum();
   spectrumRunning = false;
+  stopVU();
 
   // Clear the old track's waveform now, so it doesn't linger on screen
   // while the new one decodes (drawWaveform can take a while on big files).
@@ -595,6 +596,7 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
       playBtn.textContent = '⏸️';
       updateMediaSessionState('playing');
       safeStartSpectrum();
+      safeStartVU();
     } catch (e) {
       if (e.name!== 'AbortError') log('Play failed:', e);
     }
@@ -611,7 +613,8 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
     if (activeAudio._loadId!== loadId) return;
     updateDuration(); // just update time, not title/art
     safeStartSpectrum();
-    updateActiveTrack(); 
+    safeStartVU();
+    updateActiveTrack();
   };
 
   // 4. Load art + waveform async with guards
@@ -667,7 +670,10 @@ function setupCanvasDPR() {
 }
 
 // 3. Animation function - DEFINE THIS SECOND
+let vuRunning = false;
+
 function animateVU() {
+  if (!vuRunning) return; // paused - let the loop die instead of drawing forever
   vuAnimationId = requestAnimationFrame(animateVU);
   analyser.getByteFrequencyData(dataArray);
 
@@ -693,7 +699,21 @@ function initVU() {
 
   vuCtx = vuCanvas.getContext('2d');
   setupCanvasDPR(); // now this exists
-  animateVU(); // and this exists too
+  safeStartVU();
+}
+
+function safeStartVU() {
+  if (vuRunning || !vuCanvas || !vuCtx || !analyser) return;
+  vuRunning = true;
+  animateVU();
+}
+
+function stopVU() {
+  vuRunning = false;
+  if (vuAnimationId) {
+    cancelAnimationFrame(vuAnimationId);
+    vuAnimationId = null;
+  }
 }
 
 // 5. Resize listener (also covers phone rotation)
@@ -768,6 +788,31 @@ eqPreset.addEventListener('change', e => applyPreset(e.target.value));
 eqPresetDrawer.addEventListener('change', e => applyPreset(e.target.value));
 
 // ===== Crossfade + Repeat Logic =====
+// Called when the song a crossfade is actively fading into gets deleted
+// from the playlist mid-fade. crossfadeLock is a raw index, and deleting a
+// song shifts every index after it - if we let the pending swap complete,
+// doSwap lands on whatever now occupies that slot instead of the track
+// nextAudio is actually playing, mislabeling the UI. Cancel the fade
+// instead: restore the outgoing track to full volume, silence/stop the
+// abandoned incoming one, and go idle so checkCrossfade can arm a fresh,
+// correct crossfade later. The pending setTimeout(doSwap, ...)/forceSwap
+// from the in-flight startCrossfade() call are left alone deliberately -
+// once crossfadeLock is -1, doSwap's own guard aborts them as a no-op.
+function cancelCrossfade() {
+  if (!isCrossfading && crossfadeLock === -1) return;
+  if (audioCtx && activeGain && nextGain) {
+    const now = audioCtx.currentTime;
+    const targetVol = parseFloat(volume.value) || 1;
+    activeGain.gain.cancelScheduledValues(now);
+    nextGain.gain.cancelScheduledValues(now);
+    activeGain.gain.setValueAtTime(targetVol, now);
+    nextGain.gain.setValueAtTime(0, now);
+  }
+  if (nextAudio) nextAudio.pause();
+  isCrossfading = false;
+  crossfadeLock = -1;
+}
+
 function checkCrossfade() {
   if (!isFinite(activeAudio.duration) || songs.length < 2 || crossfadeMs === 0) return;
 
@@ -786,7 +831,14 @@ function checkCrossfade() {
     crossfadeLock = next;
     isCrossfading = true;
     log('Crossfade triggered:', songs[currentIdx].title, '->', songs[next].title);
-    startCrossfade();
+    // startCrossfade is fire-and-forget here; if it rejects before doSwap's
+    // own finally can run (e.g. setValueCurveAtTime throwing), the flags
+    // above would otherwise stay stuck busy forever.
+    startCrossfade().catch(e => {
+      console.warn('startCrossfade failed:', e);
+      isCrossfading = false;
+      crossfadeLock = -1;
+    });
   }
 }
 
@@ -798,67 +850,17 @@ async function startCrossfade() {
     return;
   }
 
-  // Don't remove timeupdate here - doSwap handles it
-
-  if (!nextAudio.src || nextAudio.dataset.songIdx!= next) {
-    const nextSong = songs[next];
-    if (!nextSong) {
-      isCrossfading = false;
-      crossfadeLock = -1;
-      return;
-    }
-    nextAudio.src = nextSong.src; // src is already blob:http://... from loadSong
-
-// Only create new blob URL if you have File and no blob URL yet
-if (nextSong.file instanceof File &&!nextSong.src.startsWith('blob:')) {
-  nextAudio.src = URL.createObjectURL(nextSong.file);
-}
-    nextAudio.dataset.songIdx = next;
-    nextAudio.load();
-  }
-
-  nextAudio.currentTime = 0;
-  nextGain.gain.value = 0;
-
-  try {
-    if (nextAudio.readyState < 2) {
-      await new Promise((resolve, reject) => {
-        nextAudio.addEventListener('canplay', resolve, { once: true });
-        nextAudio.addEventListener('error', reject, { once: true });
-        setTimeout(() => reject('timeout'), 2000);
-      });
-    }
-    await nextAudio.play();
-  } catch (e) {
-    log('Crossfade aborted:', e);
+  const nextSong = songs[next];
+  if (!nextSong) {
     isCrossfading = false;
     crossfadeLock = -1;
     return;
   }
 
-  const now = audioCtx.currentTime;
-const fadeTime = crossfadeMs / 1000;
-const targetVol = parseFloat(volume.value) || 1;
-const samples = 100;
-const curveA = new Float32Array(samples);
-const curveB = new Float32Array(samples);
+  // Don't remove timeupdate here - doSwap handles it
+  const targetVol = parseFloat(volume.value) || 1; // computed early - doSwap may run before the curve-building code below does
 
-// Build equal-power curves
-for (let i = 0; i < samples; i++) {
-  const progress = i / (samples - 1);
-  curveA[i] = Math.cos(progress * Math.PI / 2) * targetVol; // fades out
-  curveB[i] = Math.sin(progress * Math.PI / 2) * targetVol; // fades in
-}
-
-activeGain.gain.cancelScheduledValues(now);
-nextGain.gain.cancelScheduledValues(now);
-
-activeGain.gain.setValueAtTime(activeGain.gain.value || targetVol, now);
-nextGain.gain.setValueAtTime(0.001, now);
-
-activeGain.gain.setValueCurveAtTime(curveA, now, fadeTime);
-nextGain.gain.setValueCurveAtTime(curveB, now, fadeTime);
-const doSwap = async () => {
+  const doSwap = async () => {
   log('doSwap START. currentIdx:', currentIdx, '->', crossfadeLock);
 
   try {
@@ -866,6 +868,7 @@ const doSwap = async () => {
     if (crossfadeLock < 0 || crossfadeLock >= songs.length) {
       console.warn('doSwap aborted: invalid crossfadeLock', crossfadeLock);
       isCrossfading = false;
+      crossfadeLock = -1;
       return;
     }
 
@@ -888,6 +891,11 @@ const doSwap = async () => {
 
     activeAudio.removeEventListener('timeupdate', onTimeUpdate);
     activeAudio.removeEventListener('ended', handleTrackEnd);
+    // forceSwap is {once:true}, so it self-removes when it fires - but if we
+    // got here via the setTimeout path instead, it's still attached to this
+    // (outgoing) element and would leak, firing on some unrelated future
+    // 'ended' event with a stale closure. Detach it explicitly either way.
+    activeAudio.removeEventListener('ended', forceSwap);
 
     [activeAudio, nextAudio] = [nextAudio, activeAudio];
     [activeGain, nextGain] = [nextGain, activeGain];
@@ -921,19 +929,85 @@ const doSwap = async () => {
   } catch (e) {
     console.log('Crossfade swap failed:', e);
   } finally {
+    // Every exit from doSwap - success, an early guard, or a caught
+    // exception - must leave both flags idle, or handleTrackEnd's
+    // isCrossfading/crossfadeLock guard blocks every future 'ended'
+    // event forever and checkCrossfade never re-arms either.
     isCrossfading = false;
+    crossfadeLock = -1;
   }
 };
 
-  const crossfadeTimeout = setTimeout(doSwap, crossfadeMs);
-
+  // Register the "current track ended before the fade finished" fallback
+  // NOW, before the (possibly slow) wait for the next track below. It used
+  // to be registered only after that wait resolved - if the active track
+  // reached natural end while we were still waiting on a slow/never-ready
+  // next track, nothing was listening yet and playback stalled dead.
+  let crossfadeTimeout = null;
   const forceSwap = () => {
-    clearTimeout(crossfadeTimeout);
+    if (crossfadeTimeout) clearTimeout(crossfadeTimeout);
     activeGain.gain.cancelScheduledValues(audioCtx.currentTime);
     nextGain.gain.cancelScheduledValues(audioCtx.currentTime);
     doSwap();
   };
   activeAudio.addEventListener('ended', forceSwap, { once: true });
+
+  if (!nextAudio.src || nextAudio.dataset.songIdx!= next) {
+    nextAudio.src = nextSong.src; // src is already blob:http://... from loadSong
+
+    // Only create new blob URL if you have File and no blob URL yet
+    if (nextSong.file instanceof File &&!nextSong.src.startsWith('blob:')) {
+      nextAudio.src = URL.createObjectURL(nextSong.file);
+    }
+    nextAudio.dataset.songIdx = next;
+    nextAudio.load();
+  }
+
+  nextAudio.currentTime = 0;
+  nextGain.gain.value = 0;
+
+  try {
+    if (nextAudio.readyState < 2) {
+      await new Promise((resolve, reject) => {
+        nextAudio.addEventListener('canplay', resolve, { once: true });
+        nextAudio.addEventListener('error', reject, { once: true });
+        setTimeout(() => reject('timeout'), 2000);
+      });
+    }
+    await nextAudio.play();
+  } catch (e) {
+    log('Crossfade setup failed, forcing a hard cut so playback continues:', e);
+    activeAudio.removeEventListener('ended', forceSwap);
+    isCrossfading = false;
+    crossfadeLock = -1;
+    // Guarantee forward progress even though the smooth fade couldn't be set up
+    await loadSong(next, true);
+    return;
+  }
+
+  const now = audioCtx.currentTime;
+  const fadeTime = crossfadeMs / 1000;
+  const samples = 100;
+  const curveA = new Float32Array(samples);
+  const curveB = new Float32Array(samples);
+
+  // Build equal-power curves
+  for (let i = 0; i < samples; i++) {
+    const progress = i / (samples - 1);
+    curveA[i] = Math.cos(progress * Math.PI / 2) * targetVol; // fades out
+    curveB[i] = Math.sin(progress * Math.PI / 2) * targetVol; // fades in
+  }
+
+  activeGain.gain.cancelScheduledValues(now);
+  nextGain.gain.cancelScheduledValues(now);
+
+  activeGain.gain.setValueAtTime(activeGain.gain.value || targetVol, now);
+  nextGain.gain.setValueAtTime(0.001, now);
+
+  activeGain.gain.setValueCurveAtTime(curveA, now, fadeTime);
+  nextGain.gain.setValueCurveAtTime(curveB, now, fadeTime);
+
+  crossfadeTimeout = setTimeout(doSwap, crossfadeMs);
 }
 // ===== Playback Logic =====
 // peek=true just looks at what the next track would be, without advancing
@@ -1153,19 +1227,21 @@ function setupMediaSessionHandlers() {
           
           // CHANGED: use guard
           safeStartSpectrum();
-          
+          safeStartVU();
+
         } catch (e) {
           if (e.name!== 'AbortError') console.log('MediaSession play failed:', e);
         }
       }
     });
-    
+
     navigator.mediaSession.setActionHandler('pause', () => {
       activeAudio.pause();
       isPlaying = false;
       playBtn.textContent = '▶️';
       updateMediaSessionState();
-      // optional: set spectrumRunning = false; if you want it to stop drawing on pause
+      stopSpectrum();
+      stopVU();
     });
 
     navigator.mediaSession.setActionHandler('previoustrack', () => prevSong());
@@ -1197,6 +1273,7 @@ async function togglePlay() {
       isPlaying = true;
       updateMediaSessionState('playing');
       safeStartSpectrum();
+      safeStartVU();
     } catch (e) {
       if (e.name !== 'AbortError') console.log('Play failed:', e);
     }
@@ -1205,6 +1282,8 @@ async function togglePlay() {
     playBtn.textContent = '▶️';
     isPlaying = false;
     updateMediaSessionState('paused');
+    stopSpectrum();
+    stopVU();
   }
 }
 
@@ -1257,10 +1336,10 @@ shuffleBtn.onclick = () => {
 };
 
 
-function updateMediaSessionState() {
+function updateMediaSessionState(state) {
   if (!('mediaSession' in navigator)) return;
-  
-  navigator.mediaSession.playbackState = activeAudio.paused? 'paused' : 'playing';
+
+  navigator.mediaSession.playbackState = state || (activeAudio.paused? 'paused' : 'playing');
 }
 
 
@@ -1340,7 +1419,11 @@ async function setAlbumArt(file) {
         if (el) {
           el.querySelector('.song-title').textContent = song.title;
           el.querySelector('.song-artist').textContent = song.artist;
-          el.querySelector('.song-album').textContent = song.album;
+          // .song-album only exists in the rendered row when the song
+          // already had an album at render time (see renderPlaylist) - a
+          // song with no album tag has no such element to update.
+          const albumEl = el.querySelector('.song-album');
+          if (albumEl) albumEl.textContent = song.album;
         }
 
         resolve();
@@ -1398,6 +1481,23 @@ songList.onclick = e => {
     if (songs[idx].artUrl?.startsWith('blob:')) URL.revokeObjectURL(songs[idx].artUrl);
     if (songs[idx].src?.startsWith('blob:')) URL.revokeObjectURL(songs[idx].src);
     songs.splice(idx, 1);
+
+    // Everything else tracking a raw index into `songs` has to shift the
+    // same way currentIdx already does below, or it silently points at
+    // whatever slid into the deleted slot instead of the song it meant.
+    if (crossfadeLock === idx) {
+      cancelCrossfade();
+    } else if (crossfadeLock > idx) {
+      crossfadeLock--;
+    }
+    if (nextAudio && nextAudio.dataset.songIdx !== undefined) {
+      const cachedIdx = parseInt(nextAudio.dataset.songIdx, 10);
+      if (cachedIdx === idx) {
+        delete nextAudio.dataset.songIdx; // preloaded song no longer exists
+      } else if (cachedIdx > idx) {
+        nextAudio.dataset.songIdx = cachedIdx - 1;
+      }
+    }
 
     if (currentIdx === idx) {
       if (activeAudio) {
