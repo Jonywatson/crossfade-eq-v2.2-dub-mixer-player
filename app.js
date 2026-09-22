@@ -37,8 +37,6 @@ let clickCount = 0;
 let touchStartX = 0;
 let touchEndX = 0;
 let isSwiping = false;
-let lastTouchX = 0;
-let velocity = 0;
 
 
 const swipeThreshold = 50; 
@@ -906,17 +904,11 @@ async function startCrossfade() {
     currentIdx = crossfadeLock;
     crossfadeLock = -1;
 
-    // Guard 2: Validate current track before art/UI
-    const currTrack = songs[currentIdx];
-    if (!currTrack) {
-      console.warn('doSwap: currTrack undefined, skipping art/UI');
-      isCrossfading = false;
-      return;
-    }
-
-    await setAlbumArt(currTrack.file);
-    updateUI(currTrack);
-    updateMediaSession(currTrack);
+    // nextTrack (validated above) IS songs[currentIdx] here - nothing
+    // between that check and this point touches songs or currentIdx again.
+    await setAlbumArt(nextTrack.file);
+    updateUI(nextTrack);
+    updateMediaSession(nextTrack);
     renderPlaylist();
     preloadNextSong();
 
@@ -924,7 +916,7 @@ async function startCrossfade() {
     // the outgoing track's shape. Clear it now, decode the new one async.
     waveformData = [];
     waveformCanvas.getContext('2d').clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
-    drawWaveform(currTrack.file, currTrack.id);
+    drawWaveform(nextTrack.file, nextTrack.id);
 
   } catch (e) {
     console.log('Crossfade swap failed:', e);
@@ -1101,9 +1093,6 @@ async function handleTrackEnd() {
   setTimeout(() => isHandlingEnded = false, 150);
 }
 
-// FIX 3: Proper play promise handling
-
-
 
 function updateUI(song, usePlaceholder = false) {
   if (!song) {
@@ -1188,7 +1177,7 @@ function preloadNextSong() {
   nextAudio.load();
 }
 
-function updateMediaSession(song, state) {
+function updateMediaSession(song) {
   if (!('mediaSession' in navigator)) return;
 
   const artUrl = song.artUrl && !song.artUrl.endsWith('.svg') 
@@ -1207,7 +1196,7 @@ function updateMediaSession(song, state) {
     ]
   });
   
-  navigator.mediaSession.playbackState = state || (activeAudio.paused ? 'paused' : 'playing');
+  navigator.mediaSession.playbackState = activeAudio.paused ? 'paused' : 'playing';
 }
 
 function setupMediaSessionHandlers() {
@@ -1655,7 +1644,6 @@ function resetPlayer() {
 }
 function handleTouchStart(e) {
   touchStartX = e.changedTouches[0].screenX;
-  lastTouchX = touchStartX;
   isSwiping = true;
   albumArt.style.transition = 'none';
 }
@@ -1665,10 +1653,6 @@ function handleTouchMove(e) {
 
   const currentX = e.changedTouches[0].screenX;
   const diffX = currentX - touchStartX;
-
-  // Track velocity if you want momentum later
-  velocity = currentX - lastTouchX;
-  lastTouchX = currentX;
 
   albumArt.style.transform = `translateX(${diffX}px)`;
 }
