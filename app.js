@@ -27,7 +27,6 @@ let crossfadeMs = 5000, lastVolume = 1, waveformData = [];
 let isHandlingEnded = false;
 let currentSwipeTarget = null;
 let crossfadeLock = -1; // -1 = idle, else = idx we're actively fading to
-let vuCanvas, vuCtx, vuAnimationId;
 let wakeLock = null;
 let activeAudio = null;
 let audio = null;
@@ -43,17 +42,22 @@ const swipeThreshold = 50;
 const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const playBtn = document.getElementById('play'), prevBtn = document.getElementById('prev'), nextBtn = document.getElementById('next');
 const shuffleBtn = document.getElementById('shuffle'), repeatBtn = document.getElementById('repeat');
+
+// Inline SVG (fill: currentColor) instead of color emoji - emoji glyphs
+// carry their own baked-in platform colors (blue on desktop, orange on
+// Android) that CSS can't override. currentColor lets this match the
+// active song row's green consistently everywhere.
+const PLAY_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+const PAUSE_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+function setPlayIcon(isPlaying) {
+  playBtn.innerHTML = isPlaying ? PAUSE_ICON : PLAY_ICON;
+}
 const eqBtn = document.getElementById('eq-btn'), eqDrawer = document.getElementById('eq-drawer'), eqClose = document.getElementById('eq-close');
 const eqPreset = document.getElementById('eq-preset'), eqPresetDrawer = document.getElementById('eq-preset-drawer');
 const eqReset = document.getElementById('eq-reset');
 const fileInput = document.getElementById('file-input');
 const folderInput = document.getElementById('folder-input');
-const matchInput = document.getElementById('match-input');
 const miniBtn = document.getElementById('miniBtn');
-const backupBtn = document.getElementById('backup-btn');  // add this here
-const restoreBtn = document.getElementById('restore-btn'); // add this too for later
-const restoreInput = document.getElementById('restore-input'); // add this too for later
-const matchBtn = document.getElementById('matchBtn');
 const addSongsBtn = document.getElementById('add-songs-btn'); // THIS IS YOUR BUTTON
 const addFolderBtn = document.getElementById('add-folder-btn');
 log('fileInput found:')
@@ -183,135 +187,6 @@ folderInput.addEventListener('change', async (e) => {
   log(`Added ${newSongs.length} tracks from folder`);
 });
 
-backupBtn.addEventListener('click', () => {
-  if (!songs.length) {
-    log('No tracks to backup');
-    return;
-  }
-
-  // Only save metadata, not blob URLs or File objects - they die on reload
-  const backupData = songs.map(s => ({
-    title: s.title,
-    artist: s.artist,
-    album: s.album,
-    artUrl: s.artUrl // only if it's not a blob URL
-  }));
-
-  const blob = new Blob([JSON.stringify(backupData, null, 2)], {type: 'application/json'});
-  const url = URL.createObjectURL(blob);
-  
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `playlist-backup-${Date.now()}.json`;
-  a.click();
-
-  // Delay revoke - revoking immediately can cancel the download in some browsers.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  log(`Backup saved: ${songs.length} tracks`);
-});
-
-restoreBtn.addEventListener('click', () => {
-  restoreInput.click(); // open file picker
-});
-
-restoreInput.addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-
-  try {
-    const text = await file.text();
-    const backupData = JSON.parse(text);
-
-    log(`Loading backup: ${backupData.length} tracks...`);
-
-    // Release blob URLs from the outgoing playlist before replacing it
-    songs.forEach(s => {
-      if (s.src?.startsWith('blob:')) URL.revokeObjectURL(s.src);
-      if (s.artUrl?.startsWith('blob:')) URL.revokeObjectURL(s.artUrl);
-    });
-
-    songs = [];
-    songList.innerHTML = '';
-
-    backupData.forEach((track) => {
-      songs.push({
-  id: Date.now().toString() + Math.random().toString(36).slice(2, 11),
-  title: track.title || 'Unknown Track',
-  artist: track.artist || 'Unknown',
-  album: track.album || '',
-  artUrl: track.artUrl && !track.artUrl.startsWith('blob:') ? track.artUrl : null, // <-- filter out blobs
-  file: null,
-  src: null
-});
-    });
-
-    renderPlaylist(); // now it has IDs
-
-    currentIdx = -1; // no track selected
-if (activeAudio && !activeAudio.paused) activeAudio.pause(); // stop any phantom play
-log(`Restore complete: ${backupData.length} tracks loaded. Pick +songs/+folder to attach audio`);
-    restoreInput.value = '';
-
-  } catch (err) {
-    log('Restore failed: ' + err.message);
-    console.error(err);
-  }
-});
-
-matchBtn.addEventListener('click', () => matchInput.click());
-
-matchInput.addEventListener('change', async (e) => {
-  const files = Array.from(e.target.files).filter(f => f.type.startsWith('audio/'));
-  if (!files.length) return;
-
-  log(`Scanning ${files.length} audio files...`);
-  let matched = 0;
-  const norm = str => str.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-  for (let song of songs) {
-    if (song.file) continue;
-    const target = norm(song.title + song.artist);
-    const file = files.find(f => norm(f.name).includes(norm(song.title)) || norm(f.name).includes(target));
-
-    if (file) {
-      song.file = file;
-      song.url = URL.createObjectURL(file);
-      
-      try {
-        const arrayBuffer = await file.slice(0, 262144).arrayBuffer();
-        const tags = await readID3Tags(arrayBuffer);
-        if (tags.picture) {
-          const blob = new Blob([tags.picture.data], {type: tags.picture.format});
-          song.artUrl = URL.createObjectURL(blob);
-        }
-      } catch(err) {}
-
-      matched++;
-    }
-  }
-
-  renderPlaylist();
-  log(`Matched ${matched}/${songs.length} tracks. Art restored where found.`);
-  matchInput.value = '';
-});
-
-async function readID3Tags(buffer) {
-  const view = new DataView(buffer);
-  if (view.getUint8(0) !== 0x49 || view.getUint8(1) !== 0x44 || view.getUint8(2) !== 0x33) return {};
-  let offset = 10;
-  while (offset < buffer.byteLength - 10) {
-    const frameId = String.fromCharCode(...new Uint8Array(buffer, offset, 4));
-    const size = view.getUint32(offset + 4);
-    if (frameId === 'APIC') {
-      const mime = 'image/jpeg';
-      const dataStart = offset + 21;
-      const data = new Uint8Array(buffer, dataStart, size - 21);
-      return { picture: { format: mime, data } };
-    }
-    offset += 10 + size;
-  }
-  return {};
-}
 // Helper: read tags once per file
 function readTags(file) {
   return new Promise(resolve => {
@@ -521,7 +396,6 @@ nextAudio.addEventListener('ended', async () => {
   setupEQSliders();
   log('WebAudio 10-Band ready');
   log('AudioContext state:', audioCtx.state);
-  initVU();
 }
 
 function updateActiveTrack(retriesLeft = 10) {
@@ -569,7 +443,6 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
   activeAudio.load(); // cancels network request
   stopSpectrum();
   spectrumRunning = false;
-  stopVU();
 
   // Clear the old track's waveform now, so it doesn't linger on screen
   // while the new one decodes (drawWaveform can take a while on big files).
@@ -591,10 +464,9 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
     if (!shouldPlay) return;
     try {
       await activeAudio.play();
-      playBtn.textContent = '⏸️';
+      setPlayIcon(true);
       updateMediaSessionState('playing');
       safeStartSpectrum();
-      safeStartVU();
     } catch (e) {
       if (e.name!== 'AbortError') log('Play failed:', e);
     }
@@ -611,7 +483,6 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
     if (activeAudio._loadId!== loadId) return;
     updateDuration(); // just update time, not title/art
     safeStartSpectrum();
-    safeStartVU();
     updateActiveTrack();
   };
 
@@ -654,71 +525,6 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
 
   activeAudio.onended = handleTrackEnd;
 }
-
-// 1. Define animateVU first
-// 2. DPR setup function - DEFINE THIS FIRST
-function setupCanvasDPR() {
-  if (!vuCanvas) return;
-  const dpr = window.devicePixelRatio || 1;
-  const rect = vuCanvas.getBoundingClientRect();
-
-  vuCanvas.width = rect.width * dpr;
-  vuCanvas.height = rect.height * dpr;
-  vuCtx.scale(dpr, dpr);
-}
-
-// 3. Animation function - DEFINE THIS SECOND
-let vuRunning = false;
-
-function animateVU() {
-  if (!vuRunning) return; // paused - let the loop die instead of drawing forever
-  vuAnimationId = requestAnimationFrame(animateVU);
-  analyser.getByteFrequencyData(dataArray);
-
-  const width = vuCanvas.clientWidth;
-  const height = vuCanvas.clientHeight;
-  vuCtx.clearRect(0, 0, width, height);
-
-  const barCount = 128;
-  const barWidth = width / barCount;
-
-  for (let i = 0; i < barCount; i++) {
-    const barHeight = (dataArray[i] / 255) * height;
-    const x = i * barWidth;
-    vuCtx.fillStyle = i > barCount * 0.9? '#ff0044' : i > barCount * 0.7? '#ffaa00' : '#00ff88';
-    vuCtx.fillRect(x, height - barHeight, barWidth - 1, barHeight);
-  }
-}
-
-// 4. Init function - DEFINE THIS THIRD
-function initVU() {
-  vuCanvas = document.getElementById('vu-meter');
-  if (!vuCanvas ||!analyser) return;
-
-  vuCtx = vuCanvas.getContext('2d');
-  setupCanvasDPR(); // now this exists
-  safeStartVU();
-}
-
-function safeStartVU() {
-  if (vuRunning || !vuCanvas || !vuCtx || !analyser) return;
-  vuRunning = true;
-  animateVU();
-}
-
-function stopVU() {
-  vuRunning = false;
-  if (vuAnimationId) {
-    cancelAnimationFrame(vuAnimationId);
-    vuAnimationId = null;
-  }
-}
-
-// 5. Resize listener (also covers phone rotation)
-window.addEventListener('resize', () => {
-  if (vuCanvas) setupCanvasDPR();
-});
-
 
 function setupEQSliders(){
   document.querySelectorAll('.eq-band').forEach((bandEl, i) => {
@@ -1085,7 +891,7 @@ async function handleTrackEnd() {
     await loadSong(next, true);
   } else {
     isPlaying = false;
-    playBtn.textContent = '▶️';
+    setPlayIcon(false);
     activeAudio.currentTime = 0;
     updateMediaSessionState();
   }
@@ -1211,12 +1017,11 @@ function setupMediaSessionHandlers() {
         try {
           await activeAudio.play();
           isPlaying = true;
-          playBtn.textContent = '⏸️';
+          setPlayIcon(true);
           updateMediaSessionState();
           
           // CHANGED: use guard
           safeStartSpectrum();
-          safeStartVU();
 
         } catch (e) {
           if (e.name!== 'AbortError') console.log('MediaSession play failed:', e);
@@ -1227,10 +1032,9 @@ function setupMediaSessionHandlers() {
     navigator.mediaSession.setActionHandler('pause', () => {
       activeAudio.pause();
       isPlaying = false;
-      playBtn.textContent = '▶️';
+      setPlayIcon(false);
       updateMediaSessionState();
       stopSpectrum();
-      stopVU();
     });
 
     navigator.mediaSession.setActionHandler('previoustrack', () => prevSong());
@@ -1258,21 +1062,19 @@ async function togglePlay() {
   if (activeAudio.paused) {
     try {
       await activeAudio.play();
-      playBtn.textContent = '⏸️';
+      setPlayIcon(true);
       isPlaying = true;
       updateMediaSessionState('playing');
       safeStartSpectrum();
-      safeStartVU();
     } catch (e) {
       if (e.name !== 'AbortError') console.log('Play failed:', e);
     }
   } else {
     activeAudio.pause();
-    playBtn.textContent = '▶️';
+    setPlayIcon(false);
     isPlaying = false;
     updateMediaSessionState('paused');
     stopSpectrum();
-    stopVU();
   }
 }
 
@@ -1290,7 +1092,7 @@ function prevSong() {
   if (activeAudio.currentTime > 3) {
     activeAudio.currentTime = 0;
     activeAudio.play().then(() => {
-      playBtn.textContent = '⏸️';
+      setPlayIcon(true);
     }).catch(e => {
       if (e.name!== 'AbortError') console.log('Prev restart failed:', e);
     });
@@ -1452,7 +1254,6 @@ function renderPlaylist() {
   document.body.classList.remove('mini-player');
   updateActiveTrack();
 
-  window.currentTracks = songs; // save it globally for backup/restore
   log('Playlist rendered: ' + songs.length + ' songs');
   return songs.length;
 }

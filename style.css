@@ -55,7 +55,6 @@ body {
   display: block !important;
   margin: 0 !important;
   padding: 0 !important;
-  z-index: 99999 !important; /* beat literally everything */
   pointer-events: none !important;
   z-index: 0; /* back behind album art now */
   opacity: 0.6; /* subtle */
@@ -190,7 +189,7 @@ main {
   flex: 1;
   overflow: hidden !important; /* kill scroll here */
   padding-top: 0 !important; /* top-fixed handles spacing */
-  padding-bottom: 0 !important;/* space for Backup button + footer */
+  padding-bottom: 0 !important;/* footer is fixed, not flowed - no bottom padding needed */
 }
 
 main.playlist {
@@ -322,20 +321,35 @@ main.playlist {
   flex-wrap: wrap; 
   margin-bottom: 8px; 
 }
-.controls button { 
-  background: none; 
-  border: none; 
-  color: #b3b3b3; 
-  font-size: 20px; 
-  cursor: pointer; 
-  width: 32px; 
-  height: 32px; 
-  display: flex; 
-  align-items: center; 
-  justify-content: center; 
-  position: relative; 
+.controls button {
+  background: none;
+  border: none;
+  color: #b3b3b3;
+  font-size: 20px;
+  cursor: pointer;
+  width: 44px;  /* min recommended touch target (Apple HIG/Material) - icon stays 20px */
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
   opacity: 0.7;                          /* ADD: subtle inactive state */
-  transition: opacity 0.2s, transform 0.1s; 
+  transition: opacity 0.2s, transform 0.1s;
+  border-radius: 50%;
+  -webkit-tap-highlight-color: transparent; /* kill the default gray/blue flash on tap */
+}
+
+/* Play/shuffle/repeat icons are inline SVGs (fill: currentColor) instead of
+   color emoji - the old emoji characters carry their own baked-in platform
+   artwork (blue on desktop's Segoe UI Emoji, orange on Android's Noto Color
+   Emoji) that CSS color/background can never override. SVG with
+   currentColor inherits this button's color, so it matches the active song
+   row's green consistently everywhere. 1em sizing tracks each button's own
+   font-size (20px normally, 24px for #play), same scale as the old emoji. */
+.controls button svg {
+  width: 1em;
+  height: 1em;
+  display: block;
 }
 
 .controls button:hover {
@@ -345,6 +359,19 @@ main.playlist {
 
 .controls button:active {
   transform: scale(0.95);                /* ADD: tap feedback */
+}
+
+/* Browser default focus rings render blue on desktop Chrome and orange on
+   Android Chrome - replace both with the same green used for the active
+   song row (#song-list li.active), and only show it for real keyboard
+   focus so a mouse click or a tap doesn't flash it. */
+.controls button:focus {
+  outline: none;
+}
+
+.controls button:focus-visible {
+  outline: 2px solid #1ed760;
+  outline-offset: 2px;
 }
 
 #play { 
@@ -487,9 +514,8 @@ body.mini-player #miniBtn {
   width: 100%;
 }
 
-/* Put volume slider + button first, make it 70% */
 .vu-wrapper label {
-  flex: 0 0 70%;
+  flex: 1;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -512,14 +538,6 @@ body.mini-player #miniBtn {
   background: #1db954;
   border-radius: 50%;
   cursor: pointer;
-}
-
-/* VU canvas gets 30% + shorter height */
-#vu-meter {
-  flex: 0 0 30%;
-  height: 32px; /* 👈 shorter than before. Try 28px-40px */
-  background: #111;
-  border-radius: 4px;
 }
 
 /* Mute button stays small */
