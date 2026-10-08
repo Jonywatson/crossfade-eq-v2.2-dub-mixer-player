@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "io.github.jonywatson.twa",
+        "sha256_cert_fingerprints": ["35:40:19:BA:05:C6:FE:2C:DD:B9:34:A0:94:E8:94:72:7E:7D:E8:67:2C:8E:A5:50:CC:A1:07:7A:B6:90:B2:CD"]
+      }
+    }]

@@ -1,0 +1,8 @@
+{
+  "name": "crossfade-player-twa-tooling",
+  "private": true,
+  "description": "Bubblewrap CLI pinned here so the Android TWA project can be rebuilt/updated later without re-fetching it into a temp directory.",
+  "devDependencies": {
+    "@bubblewrap/cli": "^1.25.0"
+  }
+}
