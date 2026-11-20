@@ -3,6 +3,11 @@
       "target": {
         "namespace": "android_app",
         "package_name": "io.github.jonywatson.twa",
-        "sha256_cert_fingerprints": ["35:40:19:BA:05:C6:FE:2C:DD:B9:34:A0:94:E8:94:72:7E:7D:E8:67:2C:8E:A5:50:CC:A1:07:7A:B6:90:B2:CD"]
+        "sha256_cert_fingerprints": [
+          "35:40:19:BA:05:C6:FE:2C:DD:B9:34:A0:94:E8:94:72:7E:7D:E8:67:2C:8E:A5:50:CC:A1:07:7A:B6:90:B2:CD",
+          "9A:75:1F:30:1B:07:A0:0A:F7:5C:E2:27:54:2D:C7:58:64:07:05:B9:EA:42:4E:F0:61:C0:12:BF:26:32:CD:91",
+          "78:03:5F:BD:46:C6:25:1A:E0:2F:28:F1:C7:77:36:36:19:96:B9:22:8D:3C:88:DD:71:10:AB:3B:D5:8D:11:C4",
+          "94:65:41:61:E6:13:37:4C:81:EE:47:07:F2:16:B3:7F:24:8D:7C:88:06:D1:69:A9:0F:73:79:1B:00:0A:56:21"
+        ]
       }
     }]
