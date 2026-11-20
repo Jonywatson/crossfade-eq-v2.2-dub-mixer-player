@@ -748,3 +748,14 @@ body.mini-player #miniBtn {
     height: 100px;
   }
 }
+
+/* Reserve room for the fixed footer so the last tracks can scroll clear of it.
+   --footer-h is measured in app.js because the footer height varies (wrapping
+   controls, EQ drawer). */
+main.playlist {
+  padding-bottom: calc(var(--footer-h, 150px) + env(safe-area-inset-bottom, 0px)) !important;
+}
+
+#lyrics-box:empty {
+  display: none;
+}

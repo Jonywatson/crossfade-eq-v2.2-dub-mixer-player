@@ -1507,5 +1507,12 @@ miniBtn.addEventListener('click', () => {
 
 if(window.innerWidth < 600) document.body.classList.add('mini-player');
 
+const bottomBar = document.querySelector('.bottom-fixed');
+if (bottomBar && 'ResizeObserver' in window) {
+  new ResizeObserver(() => {
+    document.documentElement.style.setProperty('--footer-h', bottomBar.offsetHeight + 'px');
+  }).observe(bottomBar);
+}
+
 
 setupMediaSessionHandlers();
