@@ -133,6 +133,7 @@ fileInput.addEventListener('change', async (e) => {
     e.target.value = '';
     return;
   }
+  await restoreReady;
 
   const newSongs = await Promise.all(files.map(async file => {
     const meta = await readTags(file); // rename 'tags' to 'meta' to avoid confusion
@@ -151,6 +152,7 @@ fileInput.addEventListener('change', async (e) => {
   songs.push(...newSongs);
   currentIdx = -1; // reset so user must click
   renderPlaylist();
+  saveNewSongs(newSongs);
   e.target.value = '';
 
   if (isShuffling) generateShuffleOrder();
@@ -163,6 +165,7 @@ folderInput.addEventListener('change', async (e) => {
     e.target.value = '';
     return;
   }
+  await restoreReady;
 
   const newSongs = await Promise.all(files.map(async file => {
     const meta = await readTags(file);
@@ -181,11 +184,23 @@ folderInput.addEventListener('change', async (e) => {
   songs.push(...newSongs);
   currentIdx = -1;
   renderPlaylist();
+  saveNewSongs(newSongs);
   e.target.value = '';
 
   if (isShuffling) generateShuffleOrder();
   log(`Added ${newSongs.length} tracks from folder`);
 });
+
+async function saveNewSongs(newSongs) {
+  try {
+    await PlaylistStore.add(newSongs);
+    const used = await PlaylistStore.usageText();
+    showToast(`Saved ${newSongs.length} song${newSongs.length === 1 ? '' : 's'}${used ? ` (${used} stored)` : ''}`);
+  } catch (err) {
+    console.error('Playlist save failed', err);
+    showToast('Not enough storage to save the whole playlist');
+  }
+}
 
 // Helper: read tags once per file
 function readTags(file) {
@@ -1271,6 +1286,7 @@ songList.onclick = e => {
     if (songs[idx].artUrl?.startsWith('blob:')) URL.revokeObjectURL(songs[idx].artUrl);
     if (songs[idx].src?.startsWith('blob:')) URL.revokeObjectURL(songs[idx].src);
     songs.splice(idx, 1);
+    PlaylistStore.remove(songId).catch(err => console.error('Playlist remove failed', err));
 
     // Everything else tracking a raw index into `songs` has to shift the
     // same way currentIdx already does below, or it silently points at
@@ -1480,6 +1496,7 @@ deleteStuckBtn.onclick = () => {
   songs.forEach(s => { if (s.artUrl && s.artUrl.startsWith('blob:')) URL.revokeObjectURL(s.artUrl); });
   songs = [];
   currentIdx = -1;
+  PlaylistStore.clear().catch(err => console.error('Playlist clear failed', err));
   if (activeAudio) {
     activeAudio.pause();
     if (activeAudio.src) URL.revokeObjectURL(activeAudio.src);
@@ -1506,6 +1523,31 @@ miniBtn.addEventListener('click', () => {
 });
 
 if(window.innerWidth < 600) document.body.classList.add('mini-player');
+
+const restoreReady = (async () => {
+  try {
+    const saved = await PlaylistStore.loadAll();
+    if (!saved.length) return;
+    const restored = await Promise.all(saved.map(async rec => {
+      const meta = await readTags(rec.file);
+      return {
+        id: rec.id,
+        order: rec.order,
+        title: meta.title,
+        artist: meta.artist,
+        album: meta.album,
+        src: URL.createObjectURL(rec.file),
+        file: rec.file,
+        artUrl: meta.artUrl
+      };
+    }));
+    songs.push(...restored);
+    renderPlaylist();
+    showToast(`Restored ${restored.length} song${restored.length === 1 ? '' : 's'}`);
+  } catch (err) {
+    console.error('Playlist restore failed', err);
+  }
+})();
 
 const bottomBar = document.querySelector('.bottom-fixed');
 if (bottomBar && 'ResizeObserver' in window) {

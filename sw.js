@@ -4,6 +4,7 @@ const APP_SHELL = [
   './index.html',
   './style.css',
   './app.js',
+  './store.js',
   './manifest.json',
   './assets/default-art.svg',
   'https://cdn.jsdelivr.net/npm/jsmediatags@3.9.7/dist/jsmediatags.min.js'
