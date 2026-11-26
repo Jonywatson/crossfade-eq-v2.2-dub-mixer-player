@@ -19,7 +19,7 @@ const DEFAULT_ART = 'assets/default-art.svg';
 let songs = [], currentIdx = -1;
 let repeatMode = 0; // 0=off, 1=all, 2=one
 let isShuffling = false, shuffleOrder = [], shufflePosition = 0;
-let audioCtx = null, analyser = null, eqChain = [], activeGain, nextGain, isCrossfading = false;
+let audioCtx = null, analyser = null, eqChain = [], activeGain, nextGain, masterGain, isCrossfading = false;
 let spectrumRunning = false; 
 let animId = null;
 let dataArray; // ADD THIS
@@ -27,6 +27,8 @@ let crossfadeMs = 5000, lastVolume = 1, waveformData = [];
 let isHandlingEnded = false;
 let currentSwipeTarget = null;
 let crossfadeLock = -1; // -1 = idle, else = idx we're actively fading to
+let crossfadeRun = 0; // bumped on cancel, so a fade still starting up gives up
+let crossfadeTimeout = null, crossfadeOnEnded = null;
 let wakeLock = null;
 let activeAudio = null;
 let audio = null;
@@ -127,69 +129,78 @@ addSongsBtn.addEventListener('click', () => {
 });
 
 
-fileInput.addEventListener('change', async (e) => {
-  const files = Array.from(e.target.files).filter(f => /\.(mp3|m4a|flac|ogg|wav|aac)$/i.test(f.name));
-  if (!files.length) {
-    e.target.value = '';
-    return;
-  }
+fileInput.addEventListener('change', e => addFiles(e.target));
+folderInput.addEventListener('change', e => addFiles(e.target));
+
+// A song's row contents before its tags have been read
+function makeSong(file, id) {
+  return {
+    id,
+    title: file.name.replace(/\.[^/.]+$/, ""),
+    artist: 'Unknown Artist',
+    album: '',
+    src: URL.createObjectURL(file),
+    file,
+    artUrl: DEFAULT_ART
+  };
+}
+
+async function addFiles(input) {
+  const files = Array.from(input.files).filter(f => /\.(mp3|m4a|flac|ogg|wav|aac)$/i.test(f.name));
+  input.value = '';
+  if (!files.length) return;
   await restoreReady;
 
-  const newSongs = await Promise.all(files.map(async file => {
-    const meta = await readTags(file); // rename 'tags' to 'meta' to avoid confusion
-    
-    return {
-      id: crypto.randomUUID(),
-      title: meta.title || file.name.replace(/\.[^/.]+$/, ""), // ✅ use meta
-      artist: meta.artist || "Unknown", // ✅ use meta
-      album: meta.album || "", // ✅ use meta
-      src: URL.createObjectURL(file),
-      file: file,
-      artUrl: meta.artUrl
-    };
-  }));
-
+  const newSongs = files.map(file => makeSong(file, crypto.randomUUID()));
   songs.push(...newSongs);
-  currentIdx = -1; // reset so user must click
-  renderPlaylist();
+  renderPlaylist(); // show rows now - reading tags can take a long time on big files
   saveNewSongs(newSongs);
-  e.target.value = '';
+  fillTags(newSongs);
 
   if (isShuffling) generateShuffleOrder();
-  log(`Added ${newSongs.length} tracks`); // add this to confirm/ No loadSong here
-});
+  log(`Added ${newSongs.length} tracks`);
+}
 
-folderInput.addEventListener('change', async (e) => {
-  const files = Array.from(e.target.files).filter(f => /\.(mp3|m4a|flac|ogg|wav|aac)$/i.test(f.name));
-  if (!files.length) {
-    e.target.value = '';
-    return;
+// Reads tags in the background and updates each row as its file finishes
+async function fillTags(list) {
+  await Promise.all(list.map(async song => {
+    const meta = await readTags(song.file);
+    const deleted = !songs.includes(song);
+
+    // Playback may have extracted art already - keep that one
+    if (deleted || song.artUrl.startsWith('blob:')) {
+      if (meta.artUrl.startsWith('blob:')) URL.revokeObjectURL(meta.artUrl);
+      delete meta.artUrl;
+    }
+    if (deleted) return;
+
+    Object.assign(song, meta);
+    updateRow(song);
+    if (songs[currentIdx] === song) {
+      updateUI(song);
+      updateMediaSession(song);
+    }
+  }));
+
+  if (searchInput.value) renderPlaylist(); // titles changed, so re-filter
+}
+
+// Updates one row in place; a full re-render per file would keep moving the scroll
+function updateRow(song) {
+  const row = songList.querySelector(`li[data-song-id="${song.id}"]`);
+  if (!row) return;
+  row.querySelector('img').src = song.artUrl;
+  row.querySelector('.song-title').textContent = song.title;
+  row.querySelector('.song-artist').textContent = song.artist;
+  if (!song.album) return;
+  let albumEl = row.querySelector('.song-album');
+  if (!albumEl) {
+    albumEl = document.createElement('div');
+    albumEl.className = 'song-album';
+    row.querySelector('.song-meta').appendChild(albumEl);
   }
-  await restoreReady;
-
-  const newSongs = await Promise.all(files.map(async file => {
-    const meta = await readTags(file);
-    
-    return {
-      id: crypto.randomUUID(),
-      title: meta.title || file.name.replace(/\.[^/.]+$/, ""),
-      artist: meta.artist || "Unknown",
-      album: meta.album || "",
-      src: URL.createObjectURL(file),
-      file: file,
-      artUrl: meta.artUrl
-    };
-  }));
-
-  songs.push(...newSongs);
-  currentIdx = -1;
-  renderPlaylist();
-  saveNewSongs(newSongs);
-  e.target.value = '';
-
-  if (isShuffling) generateShuffleOrder();
-  log(`Added ${newSongs.length} tracks from folder`);
-});
+  albumEl.textContent = song.album;
+}
 
 async function saveNewSongs(newSongs) {
   try {
@@ -305,7 +316,7 @@ async function initAudio() {
   activeGain = audioCtx.createGain();
   nextGain = audioCtx.createGain();
   nextGain.gain.value = 0;
-  activeGain.gain.value = parseFloat(volume?.value) || 1;
+  activeGain.gain.value = 1; // these two only crossfade; volume is masterGain
 
   const preGain = audioCtx.createGain();
   preGain.gain.value = 0.707;
@@ -337,15 +348,15 @@ async function initAudio() {
   nextGain.connect(eqChain[0]);
   eqChain[eqChain.length - 1].connect(preGain);
 
-  const mixBus = audioCtx.createGain();
-  mixBus.gain.value = 1;
-  preGain.connect(mixBus);
-  mixBus.connect(audioCtx.destination);
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = parseFloat(volume.value);
+  preGain.connect(masterGain);
+  masterGain.connect(audioCtx.destination);
 
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 2048;
   analyser.smoothingTimeConstant = 0.7;
-  mixBus.connect(analyser);
+  masterGain.connect(analyser);
   dataArray = new Uint8Array(analyser.frequencyBinCount);
 
   // === ADD GUARD: only add listeners once ===
@@ -436,6 +447,8 @@ async function loadSong(idx, shouldPlay = true) {
   // Must exist before we touch activeAudio below (it's created lazily).
   await initAudio();
   if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+  cancelCrossfade(); // picking a track overrides a fade in progress
 
   // Guard: abort if this load is stale
   const loadId = Symbol();
@@ -614,17 +627,18 @@ eqPresetDrawer.addEventListener('change', e => applyPreset(e.target.value));
 // nextAudio is actually playing, mislabeling the UI. Cancel the fade
 // instead: restore the outgoing track to full volume, silence/stop the
 // abandoned incoming one, and go idle so checkCrossfade can arm a fresh,
-// correct crossfade later. The pending setTimeout(doSwap, ...)/forceSwap
-// from the in-flight startCrossfade() call are left alone deliberately -
-// once crossfadeLock is -1, doSwap's own guard aborts them as a no-op.
+// correct crossfade later. The pending swap timer and 'ended' fallback are
+// removed too, or they could fire in the middle of that later fade.
 function cancelCrossfade() {
   if (!isCrossfading && crossfadeLock === -1) return;
+  crossfadeRun++;
+  clearTimeout(crossfadeTimeout);
+  activeAudio?.removeEventListener('ended', crossfadeOnEnded);
   if (audioCtx && activeGain && nextGain) {
     const now = audioCtx.currentTime;
-    const targetVol = parseFloat(volume.value) || 1;
     activeGain.gain.cancelScheduledValues(now);
     nextGain.gain.cancelScheduledValues(now);
-    activeGain.gain.setValueAtTime(targetVol, now);
+    activeGain.gain.setValueAtTime(1, now);
     nextGain.gain.setValueAtTime(0, now);
   }
   if (nextAudio) nextAudio.pause();
@@ -633,7 +647,8 @@ function cancelCrossfade() {
 }
 
 function checkCrossfade() {
-  if (!isFinite(activeAudio.duration) || songs.length < 2 || crossfadeMs === 0) return;
+  // pausing fires one last timeupdate - it must not start a fade
+  if (activeAudio.paused || !isFinite(activeAudio.duration) || songs.length < 2 || crossfadeMs === 0) return;
 
   const timeLeft = activeAudio.duration - activeAudio.currentTime;
   const crossfadeSec = crossfadeMs / 1000;
@@ -643,7 +658,14 @@ function checkCrossfade() {
     log('checkCrossfade:', timeLeft.toFixed(2), 's left, isCrossfading:', isCrossfading, 'lock:', crossfadeLock);
   }
 
-  if (timeLeft <= crossfadeSec &&!isCrossfading && crossfadeLock === -1) {
+  if (isCrossfading || crossfadeLock !== -1) return;
+
+  // Have the next track loaded before the fade is due - loading it at fade
+  // time can take over a second, which shortens the audible crossfade
+  if (timeLeft <= crossfadeSec + 5) preloadNextSong();
+
+  // timeupdate only fires about every 250ms, so allow for that or we start late
+  if (timeLeft <= crossfadeSec + 0.25) {
     let next = getNextIndex(); // Don't use currentIdx + 1, that ignores shuffle/repeat
     if (next === -1 || next === currentIdx) return;
 
@@ -662,6 +684,7 @@ function checkCrossfade() {
 }
 
 async function startCrossfade() {
+  const run = ++crossfadeRun;
   let next = crossfadeLock;
   if (next === -1 || next === currentIdx) {
     isCrossfading = false;
@@ -677,8 +700,6 @@ async function startCrossfade() {
   }
 
   // Don't remove timeupdate here - doSwap handles it
-  const targetVol = parseFloat(volume.value) || 1; // computed early - doSwap may run before the curve-building code below does
-
   const doSwap = async () => {
   log('doSwap START. currentIdx:', currentIdx, '->', crossfadeLock);
 
@@ -706,7 +727,7 @@ async function startCrossfade() {
     activeGain.gain.cancelScheduledValues(swapNow);
     nextGain.gain.cancelScheduledValues(swapNow);
     activeGain.gain.setValueAtTime(0, swapNow);
-    nextGain.gain.setValueAtTime(targetVol, swapNow);
+    nextGain.gain.setValueAtTime(1, swapNow);
 
     activeAudio.removeEventListener('timeupdate', onTimeUpdate);
     activeAudio.removeEventListener('ended', handleTrackEnd);
@@ -756,13 +777,13 @@ async function startCrossfade() {
   // to be registered only after that wait resolved - if the active track
   // reached natural end while we were still waiting on a slow/never-ready
   // next track, nothing was listening yet and playback stalled dead.
-  let crossfadeTimeout = null;
   const forceSwap = () => {
     if (crossfadeTimeout) clearTimeout(crossfadeTimeout);
     activeGain.gain.cancelScheduledValues(audioCtx.currentTime);
     nextGain.gain.cancelScheduledValues(audioCtx.currentTime);
     doSwap();
   };
+  crossfadeOnEnded = forceSwap;
   activeAudio.addEventListener('ended', forceSwap, { once: true });
 
   if (!nextAudio.src || nextAudio.dataset.songIdx!= next) {
@@ -787,8 +808,11 @@ async function startCrossfade() {
         setTimeout(() => reject('timeout'), 2000);
       });
     }
+    if (run !== crossfadeRun) return; // cancelled while loading
     await nextAudio.play();
+    if (run !== crossfadeRun) return;
   } catch (e) {
+    if (run !== crossfadeRun) return; // cancelling is what interrupted it
     log('Crossfade setup failed, forcing a hard cut so playback continues:', e);
     activeAudio.removeEventListener('ended', forceSwap);
     isCrossfading = false;
@@ -799,7 +823,10 @@ async function startCrossfade() {
   }
 
   const now = audioCtx.currentTime;
-  const fadeTime = crossfadeMs / 1000;
+  // Never fade for longer than the outgoing track has left, or it gets cut off
+  // while still audible
+  const remaining = activeAudio.duration - activeAudio.currentTime;
+  const fadeTime = Math.max(0.1, Math.min(crossfadeMs / 1000, remaining || Infinity));
   const samples = 100;
   const curveA = new Float32Array(samples);
   const curveB = new Float32Array(samples);
@@ -807,20 +834,20 @@ async function startCrossfade() {
   // Build equal-power curves
   for (let i = 0; i < samples; i++) {
     const progress = i / (samples - 1);
-    curveA[i] = Math.cos(progress * Math.PI / 2) * targetVol; // fades out
-    curveB[i] = Math.sin(progress * Math.PI / 2) * targetVol; // fades in
+    curveA[i] = Math.cos(progress * Math.PI / 2); // fades out
+    curveB[i] = Math.sin(progress * Math.PI / 2); // fades in
   }
 
   activeGain.gain.cancelScheduledValues(now);
   nextGain.gain.cancelScheduledValues(now);
 
-  activeGain.gain.setValueAtTime(activeGain.gain.value || targetVol, now);
+  activeGain.gain.setValueAtTime(activeGain.gain.value || 1, now);
   nextGain.gain.setValueAtTime(0.001, now);
 
   activeGain.gain.setValueCurveAtTime(curveA, now, fadeTime);
   nextGain.gain.setValueCurveAtTime(curveB, now, fadeTime);
 
-  crossfadeTimeout = setTimeout(doSwap, crossfadeMs);
+  crossfadeTimeout = setTimeout(doSwap, fadeTime * 1000);
 }
 // ===== Playback Logic =====
 // peek=true just looks at what the next track would be, without advancing
@@ -1045,6 +1072,7 @@ function setupMediaSessionHandlers() {
     });
 
     navigator.mediaSession.setActionHandler('pause', () => {
+      cancelCrossfade();
       activeAudio.pause();
       isPlaying = false;
       setPlayIcon(false);
@@ -1085,6 +1113,7 @@ async function togglePlay() {
       if (e.name !== 'AbortError') console.log('Play failed:', e);
     }
   } else {
+    cancelCrossfade(); // otherwise the incoming track plays on
     activeAudio.pause();
     setPlayIcon(false);
     isPlaying = false;
@@ -1105,6 +1134,7 @@ function nextSong() {
 function prevSong() {
   if (!activeAudio) return;
   if (activeAudio.currentTime > 3) {
+    cancelCrossfade();
     activeAudio.currentTime = 0;
     activeAudio.play().then(() => {
       setPlayIcon(true);
@@ -1169,7 +1199,7 @@ fadeSlider.addEventListener('input', () => {
 
 volume.addEventListener('input', () => {
   const vol = parseFloat(volume.value);
-  if (activeGain) activeGain.gain.setValueAtTime(vol, audioCtx.currentTime);
+  if (masterGain) masterGain.gain.setValueAtTime(vol, audioCtx.currentTime);
   volumeBtn.textContent = vol === 0? '🔇' : vol < 0.5? '🔉' : '🔊';
 });
 
@@ -1306,6 +1336,7 @@ songList.onclick = e => {
     }
 
     if (currentIdx === idx) {
+      cancelCrossfade();
       if (activeAudio) {
         activeAudio.pause();
         activeAudio.currentTime = 0;
@@ -1497,6 +1528,8 @@ deleteStuckBtn.onclick = () => {
   songs = [];
   currentIdx = -1;
   PlaylistStore.clear().catch(err => console.error('Playlist clear failed', err));
+  cancelCrossfade();
+  if (nextAudio) delete nextAudio.dataset.songIdx; // preload is for a deleted song
   if (activeAudio) {
     activeAudio.pause();
     if (activeAudio.src) URL.revokeObjectURL(activeAudio.src);
@@ -1528,21 +1561,10 @@ const restoreReady = (async () => {
   try {
     const saved = await PlaylistStore.loadAll();
     if (!saved.length) return;
-    const restored = await Promise.all(saved.map(async rec => {
-      const meta = await readTags(rec.file);
-      return {
-        id: rec.id,
-        order: rec.order,
-        title: meta.title,
-        artist: meta.artist,
-        album: meta.album,
-        src: URL.createObjectURL(rec.file),
-        file: rec.file,
-        artUrl: meta.artUrl
-      };
-    }));
+    const restored = saved.map(rec => ({ ...makeSong(rec.file, rec.id), order: rec.order }));
     songs.push(...restored);
     renderPlaylist();
+    fillTags(restored);
     showToast(`Restored ${restored.length} song${restored.length === 1 ? '' : 's'}`);
   } catch (err) {
     console.error('Playlist restore failed', err);
