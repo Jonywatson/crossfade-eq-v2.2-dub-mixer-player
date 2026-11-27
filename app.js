@@ -487,7 +487,11 @@ log('loadSong called:', idx, 'src:', song?.src, 'src type:', typeof song?.src);
   activeAudio.src = song.src;
   activeAudio.load();
 
+  const element = activeAudio;
   const playNow = async () => {
+    // Once only: canplay fires again after any seek, including the rewind when
+    // the last track ends, which would start it playing again
+    element.oncanplay = null;
     if (activeAudio._loadId!== loadId) return; // stale load, abort
     if (!shouldPlay) return;
     try {
